@@ -342,8 +342,14 @@ xrdb -override <<< 'Xft.dpi: 120'
 # Lanza el launcher PortableApps — hace el setup del perfil, crea Firefox y sale.
 "$WINE_BIN" "$SENAE_EXE_WIN"
 
-# wineserver --wait bloquea hasta que Firefox (y plugin-container, etc.) hayan terminado.
-exec "$WINESERVER_BIN" --wait
+# wineserver --wait bloquea hasta que TODOS los procesos Wine terminen.
+# Problema: si Firefox crashea (ej. fullscreen doble), el escritorio virtual de Wine
+# (proceso interno del wineserver) queda vivo indefinidamente → bash se cuelga.
+# Solución: timeout de 60 s; si expira, wineserver -k mata todos los procesos Wine.
+timeout 60 "$WINESERVER_BIN" --wait 2>/dev/null || {
+    echo "Wine no cerró limpiamente en 60 s — forzando cierre del wineserver." >&2
+    "$WINESERVER_BIN" -k 2>/dev/null || true
+}
 INNER_EOF
 chmod +x "$INNER_SCRIPT"
 
