@@ -1,0 +1,52 @@
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portaldev.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portaldev.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portaldevint.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portaldevint.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portal.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portal.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portalinterno.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portalinterno.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portaltest.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portaltest.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portaltestint.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_portaltestint.aduana.gob.ec_443_"
+
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapass.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapass.aduana.gob.ec_443_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapassint.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapassint.aduana.gob.ec_443_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapasstest.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapasstest.aduana.gob.ec_443_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapasstestint.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapasstestint.aduana.gob.ec_443_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapassdev.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapassdev.aduana.gob.ec_443_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapassdevint.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\AppData\LocalLow\sg\openews\_ecuapassdevint.aduana.gob.ec_443_\" /Y 
+
+del /S /Q "%userprofile%\sg\openews\_ecuapassdev.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\sg\openews\_ecuapassdev.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\sg\openews\_ecuapassdevint.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\sg\openews\_ecuapassdevint.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\sg\openews\_ecuapass.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\sg\openews\_ecuapass.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\sg\openews\_ecuapassint.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\sg\openews\_ecuapassint.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\sg\openews\_ecuapasstest.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\sg\openews\_ecuapasstest.aduana.gob.ec_443_"
+del /S /Q "%userprofile%\sg\openews\_ecuapasstestint.aduana.gob.ec_80_"
+del /S /Q "%userprofile%\sg\openews\_ecuapasstestint.aduana.gob.ec_443_"
+
+del /S /Q "%userprofile%\sg\openews\_portal.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portal.aduana.gob.ec_443_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portalinterno.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portalinterno.aduana.gob.ec_443_\" /Y
+del /S /Q "%userprofile%\sg\openews\_portaltest.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portaltest.aduana.gob.ec_443_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portaltestint.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portaltestint.aduana.gob.ec_443_\" /Y
+del /S /Q "%userprofile%\sg\openews\_portaldev.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portaldev.aduana.gob.ec_443_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portaldevint.aduana.gob.ec_80_\" /Y 
+del /S /Q "%userprofile%\sg\openews\_portaldevint.aduana.gob.ec_443_\" /Y
+
