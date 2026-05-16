@@ -1,12 +1,18 @@
 #!/bin/bash
-# Lanza el SENAE Browser dentro de un sandbox Bubblewrap (Fase 3).
+# Lanza el SENAE Browser dentro de un sandbox Bubblewrap (Fase 4).
 #
-# FASE 3 — Sandbox activo, sin proxy TLS.
-# El proceso Wine queda aislado del sistema de archivos y los namespaces del host
-# (PID, UTS). La red permanece activa hasta Fase 4.
+# FASE 4 — Sandbox activo con proxy TLS.
+# La red está aislada (--unshare-net). Todo el tráfico de Firefox pasa por
+# mitmproxy a través de un socket Unix que se monta en el sandbox.
 # IPC namespace se comparte deliberadamente con el host (ver sección --unshare-*).
 #
-# ADVERTENCIA: NO uses para trámites reales — sin proxy TLS el tráfico no está auditado.
+# Requisitos previos (en terminales separadas o --bg):
+#   bash proxy/run_proxy.sh          # arranca mitmproxy + socat externo
+#   bash scripts/install_proxy_cert.sh   # primera vez: instala CA en Firefox
+#
+# Flujo de red dentro del sandbox:
+#   Firefox → socat TCP 127.0.0.1:8080 → UNIX /tmp/senaebox-proxy.sock
+#   socat (host) UNIX → TCP 127.0.0.1:8081 → mitmproxy → Internet
 
 set -euo pipefail
 
@@ -21,8 +27,9 @@ WINE_USER=$(whoami)
 # mantener el sandbox vivo hasta que Firefox (y cualquier otro proceso Wine) termine.
 SENAE_EXE_WIN="C:\\users\\$WINE_USER\\Documents\\SENAE browser\\SENAE_browser_portable.exe"
 SENAE_EXE_LINUX="$WINEPREFIX_DIR/drive_c/users/$WINE_USER/Documents/SENAE browser/SENAE_browser_portable.exe"
+PROXY_SOCK="/tmp/senaebox-proxy.sock"
 
-echo "=== SenaeBox — Fase 3 (Bubblewrap, sin proxy TLS) ==="
+echo "=== SenaeBox — Fase 4 (Bubblewrap + proxy TLS) ==="
 echo ""
 
 # --- Detectar Wine compatible ---
@@ -100,18 +107,35 @@ else
     echo ""
 fi
 
+# --- Verificar proxy TLS ---
+# Con --unshare-net el sandbox no tiene red; todo el tráfico debe pasar por el proxy.
+# El socket Unix es el punto de entrada al proxy desde dentro del sandbox.
+if [ ! -S "$PROXY_SOCK" ]; then
+    echo "ERROR: Socket del proxy no encontrado: $PROXY_SOCK"
+    echo ""
+    echo "  Inicia el proxy en otra terminal:"
+    echo "    bash proxy/run_proxy.sh"
+    echo ""
+    echo "  Primera vez: instala también el certificado CA:"
+    echo "    bash scripts/install_proxy_cert.sh"
+    exit 1
+fi
+echo "  Proxy   : $PROXY_SOCK (activo)"
+echo ""
+
 # --- Preparar log ---
 
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/bwrap_$(date +%Y%m%d_%H%M%S).log"
 
 {
-    echo "SenaeBox — Log de Bubblewrap (Fase 3)"
+    echo "SenaeBox — Log de Bubblewrap (Fase 4)"
     echo "Fecha   : $(date)"
     echo "Usuario : $WINE_USER"
     echo "DISPLAY : $DISPLAY (socket: $X11_SOCKET)"
     echo "Xauth   : $XAUTH_FILE"
     echo "Pulse   : $PULSE_SOCKET (activo: $PULSE_AVAILABLE)"
+    echo "Proxy   : $PROXY_SOCK"
     echo "Wine    : $WINE_BIN"
     echo "Exe     : $SENAE_EXE_LINUX"
     echo "---"
@@ -159,8 +183,9 @@ BWRAP_ARGS=(
     # Firefox invalida su caché de perfil y puede fallar en la inicialización.
     --ro-bind-try /etc/machine-id          /etc/machine-id
 
-    # DNS y certificados TLS: necesarios mientras --share-net esté activo.
-    # Se eliminan en Fase 4 cuando el proxy TLS gestione todo el tráfico.
+    # DNS y TLS del host: con --unshare-net el sandbox no puede alcanzar el DNS del host,
+    # pero se mantienen por si Wine o algún proceso interno los necesita para rutas locales.
+    # El tráfico real de Firefox va por el proxy (mitmproxy gestiona DNS y TLS).
     --ro-bind-try /etc/resolv.conf         /etc/resolv.conf
     --ro-bind-try /etc/nsswitch.conf       /etc/nsswitch.conf
     --ro-bind-try /etc/pki/tls             /etc/pki/tls
@@ -218,11 +243,17 @@ BWRAP_ARGS=(
     --unshare-pid          # Wine no puede ver ni matar procesos del host
     --unshare-uts          # hostname aislado (Wine no puede cambiar hostname)
     --unshare-cgroup-try   # cgroup aislado si el kernel lo permite
-    # Red compartida — TEMPORAL hasta Fase 4 (proxy TLS + --unshare-net)
+    --unshare-net          # red aislada — Firefox solo puede acceder via proxy TLS
     --die-with-parent
     --new-session
 
+    # Socket Unix del proxy: punto de entrada de red desde el sandbox.
+    # socat dentro del sandbox escucha en TCP 127.0.0.1:8080 y reenvía aquí.
+    # Firefox usa 127.0.0.1:8080 como proxy HTTP/HTTPS (configurado en user.js).
+    --bind "$PROXY_SOCK"  "$PROXY_SOCK"
+
     # Variables de entorno dentro del sandbox
+    --setenv PROXY_SOCK            "$PROXY_SOCK"
     --setenv DISPLAY               "$DISPLAY"
     --setenv WINEPREFIX            "$WINEPREFIX_DIR"
     --setenv WINEARCH              "win32"
@@ -285,18 +316,28 @@ trap 'rm -f "$INNER_SCRIPT"' EXIT
 cat > "$INNER_SCRIPT" << 'INNER_EOF'
 #!/bin/bash
 set -e
-# WINE_BIN es p. ej. /ruta/bin/wine; el wineserver está junto a wine.
 WINESERVER_BIN="${WINE_BIN%wine}wineserver"
+
+# Con --unshare-net el namespace de red comienza solo con loopback DOWN.
+# Hay que levantarlo explícitamente para que 127.0.0.1 sea alcanzable.
+ip link set lo up
+
+# Puente socat: TCP 127.0.0.1:8080 → socket Unix del proxy (fuera del sandbox).
+# Firefox está configurado en user.js para usar 127.0.0.1:8080 como proxy HTTP/HTTPS.
+socat TCP-LISTEN:8080,bind=127.0.0.1,fork,reuseaddr \
+      UNIX-CONNECT:"$PROXY_SOCK" &
+SOCAT_PID=$!
+trap 'kill "$SOCAT_PID" 2>/dev/null' EXIT
+
+# Breve espera para que socat esté escuchando antes de que Firefox haga su primera request
+sleep 0.5
 
 xrdb -override <<< 'Xft.dpi: 120'
 
-# Lanza el launcher PortableApps. Hace el setup del perfil y crea Firefox, luego sale.
-# No usamos exec porque necesitamos seguir corriendo después de que el launcher salga.
+# Lanza el launcher PortableApps — hace el setup del perfil, crea Firefox y sale.
 "$WINE_BIN" "$SENAE_EXE_WIN"
 
-# El launcher salió pero Firefox sigue vivo, conectado al wineserver.
-# wineserver --wait bloquea hasta que TODOS los procesos Wine (Firefox, plugin-container,
-# etc.) hayan terminado. Esto mantiene el sandbox vivo el tiempo que el usuario use el browser.
+# wineserver --wait bloquea hasta que Firefox (y plugin-container, etc.) hayan terminado.
 exec "$WINESERVER_BIN" --wait
 INNER_EOF
 chmod +x "$INNER_SCRIPT"
@@ -308,10 +349,8 @@ BWRAP_ARGS+=(--ro-bind "$INNER_SCRIPT" /run/senaebox_launch.sh)
 echo "  Ejecutable : $SENAE_EXE_LINUX"
 echo "  Log bwrap  : $LOG_FILE"
 echo "  Wine       : $WINE_BIN"
-echo "  Sandbox    : activo (Bubblewrap)"
-echo ""
-echo "  ADVERTENCIA: Fase 3 — sin proxy TLS. Red directa (--share-net temporal)."
-echo "  No uses para trámites reales hasta Fase 4."
+echo "  Proxy      : $PROXY_SOCK"
+echo "  Sandbox    : activo (Bubblewrap, red aislada)"
 echo ""
 echo "Iniciando SENAE Browser en sandbox..."
 echo ""
