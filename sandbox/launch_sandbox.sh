@@ -244,6 +244,11 @@ BWRAP_ARGS=(
     --unshare-uts          # hostname aislado (Wine no puede cambiar hostname)
     --unshare-cgroup-try   # cgroup aislado si el kernel lo permite
     --unshare-net          # red aislada — Firefox solo puede acceder via proxy TLS
+    # CAP_NET_ADMIN: necesaria para "ip link set lo up" dentro del namespace de red.
+    # El proceso bwrap es SUID root en Fedora; --cap-add concede la capability al
+    # proceso interior. El alcance está limitado al namespace de red aislado por
+    # --unshare-net — no afecta al host.
+    --cap-add cap_net_admin
     --die-with-parent
     --new-session
 
