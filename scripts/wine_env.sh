@@ -59,7 +59,7 @@ _senaebox_find_wine() {
     if command -v wine &>/dev/null; then
         local test_dir="/tmp/senaebox_wine32_test_$$"
         if WINEDEBUG=-all WINEARCH=win32 WINEPREFIX="$test_dir" \
-               wine wineboot --init &>/dev/null 2>&1; then
+               wine wineboot --init &>/dev/null; then
             rm -rf "$test_dir"
             local ver
             ver=$(wine --version 2>/dev/null || echo "versión desconocida")

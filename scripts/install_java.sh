@@ -25,16 +25,16 @@ EXPECTED_SHA256=""
 echo "=== SenaeBox — Instalar Java JRE 7u15 ==="
 echo ""
 
-# --- 0. Detectar Wine compatible ---
+# --- 1. Detectar Wine compatible ---
 
-echo "[0/3] Buscando Wine compatible..."
+echo "[1/4] Buscando Wine compatible..."
 source "$SCRIPT_DIR/wine_env.sh"
 echo "  Wine: $WINE_BIN"
 echo ""
 
-# --- 1. Localizar jre715.exe ---
+# --- 2. Localizar jre715.exe ---
 
-echo "[1/3] Localizando jre715.exe..."
+echo "[2/4] Localizando jre715.exe..."
 
 JRE_EXE="${1:-jre715.exe}"
 
@@ -52,9 +52,9 @@ fi
 
 echo "  Archivo: $JRE_EXE"
 
-# --- 2. Verificación SHA-256 ---
+# --- 3. Verificación SHA-256 ---
 
-echo "[2/3] Verificando integridad del instalador..."
+echo "[3/4] Verificando integridad del instalador..."
 
 ACTUAL_SHA256=$(sha256sum "$JRE_EXE" | awk '{print $1}')
 echo "  SHA-256: $ACTUAL_SHA256"
@@ -97,9 +97,9 @@ if [ ! -d "$WINEPREFIX_DIR" ]; then
     exit 1
 fi
 
-# --- 3. Instalar JRE 7u15 ---
+# --- 4. Instalar JRE 7u15 ---
 
-echo "[3/3] Instalando JRE 7u15 en Wine..."
+echo "[4/4] Instalando JRE 7u15 en Wine..."
 echo "  Esto puede tardar varios minutos. Puede aparecer una ventana de instalación."
 echo ""
 

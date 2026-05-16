@@ -76,12 +76,16 @@ echo ""
 # LIBGL_ALWAYS_SOFTWARE=1: fuerza renderizado por CPU (LLVMpipe) en lugar de GPU.
 # Necesario porque Wine no implementa dxgi_resource_GetSharedHandle, y Firefox 41
 # crashea con STATUS_BREAKPOINT cuando el compositor DXGI falla (xul.dll:0185AD7E).
+#
+# set +e / set -e: necesario para capturar el exit code de Wine sin que set -euo pipefail
+# termine el script antes de llegar al bloque de reporte de error de abajo.
+set +e
 LIBGL_ALWAYS_SOFTWARE=1 \
 WINEARCH=win32 WINEPREFIX="$WINEPREFIX_DIR" \
     "$WINE_BIN" "$SENAE_EXE_WIN" \
     2>>"$LOG_FILE"
-
 EXIT_CODE=$?
+set -e
 
 echo ""
 if [ "$EXIT_CODE" -eq 0 ]; then
