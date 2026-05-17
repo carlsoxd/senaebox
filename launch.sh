@@ -1,103 +1,237 @@
 #!/bin/bash
-# Lanza el SENAE Browser dentro de Wine.
+# SenaeBox — Launcher principal
 #
-# FASE 2 — Sin sandbox ni proxy TLS.
-# Esta versión es solo para verificar que Wine + Flash + Java funcionan.
-# NO uses esta versión para trámites reales con datos sensibles.
+# Se ejecuta desde el ícono del escritorio (Terminal=false).
+# No imprime nada en terminal — todo va a logs y diálogos gráficos.
+#
+# Flujo:
+#   1. Verificar dependencias mínimas
+#   2. Evitar instancias múltiples (lock file)
+#   3. Primera vez → setup silencioso con barra de progreso
+#   4. Verificar/instalar certificado CA del proxy en Firefox
+#   5. Arrancar proxy TLS en segundo plano
+#   6. Abrir el browser en sandbox (bloqueante)
+#   7. Al cerrar: detener proxy, limpiar lock
 
-set -euo pipefail
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WINEPREFIX_DIR="$HOME/.local/share/senaebox/wine"
-LOG_DIR="$HOME/.local/share/senaebox/logs"
-WINE_USER=$(whoami)
-
-SENAE_EXE_WIN="C:\\users\\$WINE_USER\\Documents\\SENAE browser\\SENAE_browser_portable.exe"
-SENAE_EXE_LINUX="$WINEPREFIX_DIR/drive_c/users/$WINE_USER/Documents/SENAE browser/SENAE_browser_portable.exe"
-
-echo "=== SenaeBox — Fase 2 (Wine, sin sandbox) ==="
-echo ""
-
-# --- Detectar Wine compatible ---
-
-echo "Buscando Wine compatible..."
-source "$SCRIPT_DIR/scripts/wine_env.sh"
-echo "  Wine: $WINE_BIN"
-echo ""
-
-# --- Verificaciones previas ---
-
-# 1. Verificar WINEPREFIX
-if [ ! -d "$WINEPREFIX_DIR" ]; then
-    echo "ERROR: WINEPREFIX no configurado."
-    echo "  Ejecuta: bash scripts/create_wineprefix.sh"
-    exit 1
-fi
-
-# 2. Verificar que el SENAE Browser está copiado
-if [ ! -f "$SENAE_EXE_LINUX" ]; then
-    echo "ERROR: SENAE_browser_portable.exe no encontrado."
-    echo ""
-    echo "  Ruta esperada:"
-    echo "  $SENAE_EXE_LINUX"
-    echo ""
-    echo "  Copia la carpeta 'SENAE browser' desde Windows a esa ubicación."
-    echo "  La carpeta completa está en Documents/SENAE browser/ en tu PC Windows."
-    exit 1
-fi
-
-# --- Preparar log ---
+# --- Rutas ---
+STATE_DIR="$HOME/.local/share/senaebox"
+LOG_DIR="$STATE_DIR/logs"
+LOCK_FILE="/tmp/senaebox.lock"
+PROXY_SOCK="/tmp/senaebox-proxy.sock"
+PROXY_PID_FILE="/tmp/senaebox-proxy.pid"
+SETUP_MARKER="$STATE_DIR/.setup_complete"
+CA_FP_MARKER="$STATE_DIR/.ca_fingerprint"
+MITM_CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+PROFILE_DIR="$STATE_DIR/wine/drive_c/users/$(whoami)/Documents/SENAE browser/Data/profile"
 
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/wine_$(date +%Y%m%d_%H%M%S).log"
+LAUNCHER_LOG="$LOG_DIR/launcher_$(date +%Y%m%d_%H%M%S).log"
 
-{
-    echo "SenaeBox — Log de Wine"
-    echo "Fecha   : $(date)"
-    echo "Usuario : $WINE_USER"
-    echo "Exe     : $SENAE_EXE_LINUX"
-    echo "---"
-} > "$LOG_FILE"
+# Redirigir toda salida al log desde este punto. Sin terminal.
+exec > >(tee -a "$LAUNCHER_LOG") 2>&1
 
-# --- Lanzar el browser ---
+echo "=== SenaeBox launcher $(date) ==="
 
-echo "  Ejecutable : $SENAE_EXE_LINUX"
-echo "  Log Wine   : $LOG_FILE"
-echo ""
-echo "  ADVERTENCIA: Fase 2 — sin sandbox ni proxy TLS."
-echo "  Solo para probar que el browser arranca. No uses para trámites reales."
-echo ""
-echo "Iniciando SENAE Browser..."
-echo ""
+# =============================================================================
+# Funciones de diálogo
+# =============================================================================
 
-# stdout de Wine va a la terminal para que Luis vea mensajes en tiempo real.
-# stderr va al log para análisis posterior si algo falla.
-#
-# LIBGL_ALWAYS_SOFTWARE=1: fuerza renderizado por CPU (LLVMpipe) en lugar de GPU.
-# Necesario porque Wine no implementa dxgi_resource_GetSharedHandle, y Firefox 41
-# crashea con STATUS_BREAKPOINT cuando el compositor DXGI falla (xul.dll:0185AD7E).
-#
-# set +e / set -e: necesario para capturar el exit code de Wine sin que set -euo pipefail
-# termine el script antes de llegar al bloque de reporte de error de abajo.
-set +e
-LIBGL_ALWAYS_SOFTWARE=1 \
-WINEARCH=win32 WINEPREFIX="$WINEPREFIX_DIR" \
-    "$WINE_BIN" "$SENAE_EXE_WIN" \
-    2>>"$LOG_FILE"
-EXIT_CODE=$?
-set -e
+_dialog() {
+    local mode="$1"; shift
+    if command -v zenity &>/dev/null; then
+        zenity "$mode" --title="SENAE Browser" --width=460 --no-markup "$@" 2>/dev/null
+    else
+        notify-send --urgency=critical "SENAE Browser" "$*" 2>/dev/null || true
+    fi
+}
 
-echo ""
-if [ "$EXIT_CODE" -eq 0 ]; then
-    echo "Browser cerrado normalmente (código: 0)."
-else
-    echo "Browser cerrado con código de error: $EXIT_CODE"
-    echo ""
-    echo "Revisa el log para más detalles:"
-    echo "  $LOG_FILE"
-    echo ""
-    echo "Pistas comunes en el log:"
-    echo "  'err:module' — DLL faltante"
-    echo "  'err:ole'    — problema con COM/DCOM"
-    echo "  'fixme:heap' — puede ignorarse"
+show_error() {
+    echo "ERROR: $*"
+    _dialog --error --text="$*"
+}
+
+show_info() {
+    echo "INFO: $*"
+    _dialog --info --text="$*"
+}
+
+# =============================================================================
+# Verificar dependencias mínimas
+# =============================================================================
+
+MISSING_DEPS=()
+command -v zenity    &>/dev/null || MISSING_DEPS+=("zenity        →  sudo dnf install zenity")
+command -v bwrap     &>/dev/null || MISSING_DEPS+=("bubblewrap    →  sudo dnf install bubblewrap")
+command -v podman    &>/dev/null || MISSING_DEPS+=("podman        →  sudo dnf install podman")
+command -v mitmdump  &>/dev/null || MISSING_DEPS+=("mitmproxy     →  pip install mitmproxy")
+command -v socat     &>/dev/null || MISSING_DEPS+=("socat         →  sudo dnf install socat")
+
+if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+    MSG="El SENAE Browser no puede abrirse porque faltan programas necesarios:\n"
+    for dep in "${MISSING_DEPS[@]}"; do
+        MSG="$MSG\n  •  $dep"
+    done
+    MSG="$MSG\n\nInstálalos y vuelve a intentar.\nDetalles en: $LAUNCHER_LOG"
+    show_error "$MSG"
+    exit 1
 fi
+
+# =============================================================================
+# Evitar instancias múltiples
+# =============================================================================
+
+if [ -f "$LOCK_FILE" ]; then
+    OLD_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        show_error "El SENAE Browser ya está abierto.\n\nSi el ícono no responde, espera unos segundos y vuelve a intentar."
+        exit 1
+    fi
+    echo "Eliminando lock stale de PID $OLD_PID"
+    rm -f "$LOCK_FILE"
+fi
+
+echo $$ > "$LOCK_FILE"
+
+# =============================================================================
+# Funciones de ciclo de vida del proxy
+# =============================================================================
+
+_stop_proxy() {
+    if [ -f "$PROXY_PID_FILE" ]; then
+        echo "Deteniendo proxy..."
+        read -r _MPID _SPID < "$PROXY_PID_FILE" 2>/dev/null || true
+        kill "$_MPID" "$_SPID" 2>/dev/null || true
+        rm -f "$PROXY_PID_FILE" "$PROXY_SOCK"
+        echo "Proxy detenido."
+    fi
+}
+
+# Al salir por cualquier motivo: detener proxy y quitar lock
+trap '_stop_proxy; rm -f "$LOCK_FILE"' EXIT INT TERM
+
+# =============================================================================
+# Primera vez: setup silencioso con barra de progreso
+# =============================================================================
+
+if [ ! -f "$SETUP_MARKER" ]; then
+    echo "Primera ejecución — iniciando setup..."
+
+    # setup_first_run.sh escribe "N" (porcentaje) y "# Texto" (etiqueta) a stdout
+    # para zenity --progress, y mensajes de log a stderr.
+    bash "$REPO_DIR/scripts/setup_first_run.sh" 2>>"$LAUNCHER_LOG" \
+        | zenity --progress \
+                 --title="SENAE Browser — Configuración inicial" \
+                 --text="Preparando el SENAE Browser por primera vez...\n\nEsto puede tardar varios minutos." \
+                 --percentage=0 --auto-close --no-cancel --width=480 2>/dev/null
+
+    # PIPESTATUS[0] = exit code de setup_first_run.sh
+    SETUP_EXIT="${PIPESTATUS[0]}"
+
+    if [ "$SETUP_EXIT" -ne 0 ]; then
+        show_error "La configuración inicial falló.\n\nRevisa el log para más detalles:\n$LAUNCHER_LOG"
+        exit 1
+    fi
+
+    touch "$SETUP_MARKER"
+    echo "Setup completado."
+fi
+
+# =============================================================================
+# Crear carpetas compartidas si no existen
+# =============================================================================
+
+mkdir -p "$HOME/SenaeBox/Descargas" "$HOME/SenaeBox/Documentos"
+
+# =============================================================================
+# Verificar e instalar certificado CA del proxy en Firefox
+#
+# Compara el SHA-256 del cert actual con el último instalado (marker file).
+# Sin match → instalar vía Podman (solo cuando es necesario, no en cada sesión).
+# =============================================================================
+
+_install_ca_if_needed() {
+    [ -f "$MITM_CERT" ]              || { echo "CA cert no existe aún."; return 0; }
+    [ -f "$PROFILE_DIR/cert8.db" ]   || { echo "cert8.db no existe aún (primer arranque de Firefox)."; return 0; }
+
+    CURRENT_FP=$(openssl x509 -in "$MITM_CERT" -noout -fingerprint -sha256 2>/dev/null || echo "")
+    STORED_FP=$(cat "$CA_FP_MARKER" 2>/dev/null || echo "")
+
+    if [ "$CURRENT_FP" = "$STORED_FP" ] && [ -n "$CURRENT_FP" ]; then
+        echo "Certificado CA vigente — sin cambios."
+        return 0
+    fi
+
+    echo "Instalando certificado CA en Firefox..."
+
+    # Indicador visual mientras Podman trabaja (se cierra solo en 120 s máximo)
+    zenity --progress --pulsate --no-cancel \
+           --title="SENAE Browser" \
+           --text="Instalando certificado de seguridad en Firefox...\n\nLa primera vez descarga una imagen (~75 MB). Espera un momento." \
+           --width=460 2>/dev/null &
+    ZENITY_WAIT_PID=$!
+
+    bash "$REPO_DIR/scripts/install_proxy_cert.sh" >> "$LAUNCHER_LOG" 2>&1
+    CERT_EXIT=$?
+
+    kill "$ZENITY_WAIT_PID" 2>/dev/null || true
+
+    if [ "$CERT_EXIT" -eq 0 ]; then
+        echo "$CURRENT_FP" > "$CA_FP_MARKER"
+        echo "Certificado CA instalado."
+    else
+        show_error "No se pudo instalar el certificado de seguridad.\n\nEl browser se abrirá, pero Ecuapass puede mostrar un error de certificado.\n\nDetalles en: $LAUNCHER_LOG"
+    fi
+}
+
+_install_ca_if_needed
+
+# =============================================================================
+# Arrancar proxy TLS en segundo plano
+# =============================================================================
+
+# Limpiar restos de sesiones anteriores que crasharon
+_stop_proxy
+rm -f "$PROXY_SOCK"
+
+echo "Arrancando proxy TLS..."
+if ! bash "$REPO_DIR/proxy/run_proxy.sh" --bg >> "$LAUNCHER_LOG" 2>&1; then
+    show_error "No se pudo arrancar el proxy de seguridad.\n\nDetalles en: $LAUNCHER_LOG"
+    exit 1
+fi
+
+# Esperar socket del proxy (máx 8 s)
+for i in $(seq 1 16); do
+    sleep 0.5
+    [ -S "$PROXY_SOCK" ] && break
+    if [ "$i" -eq 16 ]; then
+        show_error "El proxy tardó demasiado en arrancar.\n\nDetalles en: $LAUNCHER_LOG"
+        exit 1
+    fi
+done
+echo "Proxy listo."
+
+# =============================================================================
+# Abrir el browser (bloqueante)
+# =============================================================================
+
+echo "Abriendo SENAE Browser..."
+bash "$REPO_DIR/sandbox/launch_sandbox.sh" >> "$LAUNCHER_LOG" 2>&1
+BROWSER_EXIT=$?
+echo "Browser cerrado (código: $BROWSER_EXIT)."
+
+# =============================================================================
+# Post-cierre: instalar CA si cert8.db acaba de aparecer (primer arranque real)
+# =============================================================================
+
+if [ -f "$PROFILE_DIR/cert8.db" ] && [ ! -f "$CA_FP_MARKER" ]; then
+    echo "cert8.db nuevo detectado — instalando certificado CA..."
+    _install_ca_if_needed
+    if [ -f "$CA_FP_MARKER" ]; then
+        show_info "Configuración completa.\n\nVuelve a abrir el SENAE Browser.\nEcuapass cargará sin errores de certificado."
+    fi
+fi
+
+# El trap EXIT detiene el proxy y elimina el lock.
+echo "Sesión terminada."

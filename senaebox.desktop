@@ -1,0 +1,22 @@
+# Plantilla de acceso directo al escritorio.
+# NO usar este archivo directamente — el setup lo copia a
+# ~/.local/share/applications/senaebox-browser.desktop con la ruta correcta.
+#
+# Para instalar manualmente:
+#   bash scripts/setup_first_run.sh
+# O copiar al escritorio:
+#   cp senaebox.desktop ~/Escritorio/
+#   chmod +x ~/Escritorio/senaebox.desktop
+
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=SENAE Browser
+GenericName=Navegador Ecuapass
+Comment=Accede al portal Ecuapass de la Aduana del Ecuador
+Exec=/home/luis/senaebox/launch.sh
+Icon=web-browser
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=true
+Keywords=ecuapass;aduana;senae;

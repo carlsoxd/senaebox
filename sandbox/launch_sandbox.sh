@@ -219,6 +219,7 @@ BWRAP_ARGS=(
     # silenciosamente porque /home no existe en el sandbox.
     --dir /home
     --dir "$HOME"
+    --dir "$HOME/SenaeBox"   # padre explícito para los bind mounts de Descargas/Documentos
 
     # /run aislado
     --dir /run
@@ -226,6 +227,15 @@ BWRAP_ARGS=(
 
     # WINEPREFIX con escritura — Wine escribe el estado del browser aquí
     --bind "$WINEPREFIX_DIR" "$WINEPREFIX_DIR"
+
+    # Carpetas compartidas de usuario (Fase 6)
+    # Permisos quirúrgicos: solo estas dos rutas del home del usuario.
+    # --bind (rw): Descargas — Firefox descarga documentos desde Ecuapass aquí.
+    #              El directorio de descarga está configurado en user.js.
+    # --ro-bind (ro): Documentos — el usuario sube archivos a Ecuapass desde aquí.
+    #                 Solo lectura: el sandbox no puede modificar los documentos del usuario.
+    --bind    "$HOME/SenaeBox/Descargas"  "$HOME/SenaeBox/Descargas"
+    --ro-bind "$HOME/SenaeBox/Documentos" "$HOME/SenaeBox/Documentos"
 
     # Aislamiento de namespaces — se listan explícitamente en lugar de usar
     # --unshare-all para poder OMITIR el namespace IPC deliberadamente.
