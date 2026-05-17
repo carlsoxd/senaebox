@@ -290,6 +290,26 @@ BWRAP_ARGS=(
     # Usadas por el script interno del sandbox (ver sección siguiente)
     --setenv WINE_BIN              "$WINE_BIN"
     --setenv SENAE_EXE_WIN         "$SENAE_EXE_WIN"
+
+    # WINEDLLOVERRIDES — workaround para crash de stack en plugin-container (Flash OOP).
+    #
+    # Cadena de fallo (Wine 8.0 Staging, bug confirmado en logs bwrap_*):
+    #   1. uiautomationcore: Wine UIA (Firefox hilo 0110) tiene un poll loop:
+    #      por cada repaint de Flash llama a uia_get_providers_for_hwnd →
+    #      envía WM_GETOBJECT a plugin-container. El loop no termina porque
+    #      el "Override provider callback" no está implementado en Wine 8.0.
+    #   2. ia2comproxy: plugin-container recibe WM_GETOBJECT → llama a
+    #      LresultFromObject → intenta marshaling COM de IAccessible2 via
+    #      ia2comproxy.dll. IPSFactoryBuffer::CreateStub devuelve E_NOINTERFACE
+    #      para IID {e89f726e-...} → la propagación del error corrompe el
+    #      exception frame → crash "Exception frame not in stack limits".
+    #
+    # uiautomationcore=d: corta el loop en la raíz (sin WM_GETOBJECT del UIA).
+    # ia2comproxy=d:       backstop — si WM_GETOBJECT llega por otra vía,
+    #                      la DLL que corrompe el stack simplemente no carga.
+    # Ambas DLLs son delay-loaded en Firefox 41 Win32: deshabilitarlas no
+    # rompe el arranque de Firefox ni la renderización de Flash.
+    --setenv WINEDLLOVERRIDES      "uiautomationcore=d;ia2comproxy=d"
 )
 
 # Wine runner — si no es el wine del sistema, su directorio raíz debe ser accesible
@@ -353,13 +373,16 @@ xrdb -override <<< 'Xft.dpi: 120'
 "$WINE_BIN" "$SENAE_EXE_WIN"
 
 # wineserver --wait bloquea hasta que TODOS los procesos Wine terminen.
-# Problema: si Firefox crashea (ej. fullscreen doble), el escritorio virtual de Wine
-# (proceso interno del wineserver) queda vivo indefinidamente → bash se cuelga.
-# Solución: timeout de 60 s; si expira, wineserver -k mata todos los procesos Wine.
-timeout 60 "$WINESERVER_BIN" --wait 2>/dev/null || {
-    echo "Wine no cerró limpiamente en 60 s — forzando cierre del wineserver." >&2
-    "$WINESERVER_BIN" -k 2>/dev/null || true
-}
+# El launcher PortableApps sale en pocos segundos, pero Firefox sigue vivo;
+# wineserver --wait retorna cuando el usuario cierra Firefox.
+#
+# Histórico: aquí había un `timeout 60` como red de seguridad para el bug
+# "fullscreen double crash" de Wine. Pero el efecto secundario era matar
+# Firefox a los 60 s en cada sesión normal (es la causa del cierre espontáneo
+# que perseguimos durante varias rondas). Eliminado: si Wine se cuelga de
+# verdad, el usuario cierra la ventana del browser; bwrap se va al matar el
+# launcher (--die-with-parent), arrastrando todo el sandbox.
+"$WINESERVER_BIN" --wait 2>/dev/null || true
 INNER_EOF
 chmod +x "$INNER_SCRIPT"
 

@@ -19,13 +19,30 @@
 
 set -euo pipefail
 
+# Directorio del repositorio (run_proxy.sh está en proxy/ dentro del repo)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
 PROXY_SOCK="/tmp/senaebox-proxy.sock"
 MITM_HOST="127.0.0.1"
 MITM_PORT=8081
 BG_MODE=false
 PID_FILE="/tmp/senaebox-proxy.pid"
+STATE_DIR="${STATE_DIR:-$HOME/.local/share/senaebox}"
+LOG_DIR="$STATE_DIR/logs"
 
 [[ "${1:-}" == "--bg" ]] && BG_MODE=true
+
+# Captura de flujos AMF: activar con SENAE_CAPTURE=1 bash launch.sh
+# Guarda un archivo .mitm por sesión en el directorio de logs para
+# inspección posterior con: python3 proxy/amf_inspect.py <archivo.mitm>
+FLOW_ARGS=()
+if [[ "${SENAE_CAPTURE:-0}" == "1" ]]; then
+    mkdir -p "$LOG_DIR"
+    FLOW_FILE="$LOG_DIR/flows_$(date +%Y%m%d_%H%M%S).mitm"
+    FLOW_ARGS=(--save-stream-file "$FLOW_FILE")
+    echo "Captura AMF habilitada → $FLOW_FILE"
+fi
 
 # --- Verificar dependencias ---
 MISSING=()
@@ -62,20 +79,42 @@ echo ""
 # Modo proxy HTTP/HTTPS estándar (--mode regular es el default).
 # Firefox lo configura como proxy explícito via user.js (network.proxy.type=1).
 echo "Iniciando mitmproxy en $MITM_HOST:$MITM_PORT..."
+
+# addon_blazeds.py: reinyecta jsessionid de BlazeDS en canales de polling.
+# Corrige el "Login Error" intermitente por pérdida de afinidad de nodo
+# en el cluster BlazeDS de Ecuapass. Ver proxy/addon_blazeds.py para detalles.
+ADDON_ARGS=()
+ADDON_PATH="$REPO_DIR/proxy/addon_blazeds.py"
+if [ -f "$ADDON_PATH" ]; then
+    ADDON_ARGS=(-s "$ADDON_PATH")
+else
+    echo "AVISO: addon_blazeds.py no encontrado en $ADDON_PATH"
+fi
+
 mitmdump \
     --listen-host "$MITM_HOST" \
     --listen-port "$MITM_PORT" \
+    --set stream_large_bodies=100k \
+    "${ADDON_ARGS[@]}" \
+    "${FLOW_ARGS[@]}" \
     &
 MITM_PID=$!
 
-# Esperar a que mitmproxy esté escuchando
+# Esperar a que mitmproxy esté escuchando en el puerto.
+# IMPORTANTE: verificar el puerto, no solo que el proceso exista.
+# Si el puerto ya estaba en uso, mitmproxy termina con error ANTES de que
+# el proceso desaparezca, por lo que kill -0 da falso positivo.
 for i in $(seq 1 10); do
     sleep 0.5
-    if kill -0 "$MITM_PID" 2>/dev/null; then
-        break
+    if ss -tlnpH 2>/dev/null | grep -q "${MITM_HOST}:${MITM_PORT}"; then
+        break   # Puerto escuchando — mitmproxy listo
+    fi
+    if ! kill -0 "$MITM_PID" 2>/dev/null; then
+        echo "ERROR: mitmproxy terminó antes de arrancar (¿puerto $MITM_PORT ya en uso?)."
+        exit 1
     fi
     if [ "$i" -eq 10 ]; then
-        echo "ERROR: mitmproxy no arrancó después de 5 segundos."
+        echo "ERROR: mitmproxy no empezó a escuchar en ${MITM_HOST}:${MITM_PORT} después de 5 segundos."
         exit 1
     fi
 done

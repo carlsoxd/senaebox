@@ -99,13 +99,33 @@ echo $$ > "$LOCK_FILE"
 # =============================================================================
 
 _stop_proxy() {
+    # 1. Matar procesos del PID file (sesión actual)
     if [ -f "$PROXY_PID_FILE" ]; then
         echo "Deteniendo proxy..."
         read -r _MPID _SPID < "$PROXY_PID_FILE" 2>/dev/null || true
         kill "$_MPID" "$_SPID" 2>/dev/null || true
-        rm -f "$PROXY_PID_FILE" "$PROXY_SOCK"
-        echo "Proxy detenido."
+        rm -f "$PROXY_PID_FILE"
     fi
+
+    # 2. Matar cualquier mitmdump que ocupe el puerto 8081, sin importar de dónde venga.
+    #    Bug: si una sesión anterior crasheó sin limpiar, el nuevo mitmdump falla con
+    #    EADDRINUSE y run_proxy.sh devuelve 0 de todas formas → el browser usa el
+    #    zombie con caché TLS vencida → "Send failed - Login Error" en el 2do módulo Flash.
+    local _stale_pid
+    _stale_pid=$(ss -tlnpH 2>/dev/null | awk '/127\.0\.0\.1:8081/{match($0,/pid=([0-9]+)/,a); if(a[1]) print a[1]}' | head -1)
+    if [ -n "$_stale_pid" ]; then
+        echo "Matando mitmdump zombie (PID $_stale_pid, puerto 8081)..."
+        kill "$_stale_pid" 2>/dev/null || true
+        # Esperar a que libere el puerto (máx 2 s)
+        local _wait=0
+        while [ "$_wait" -lt 4 ] && ss -tlnpH 2>/dev/null | grep -q '127\.0\.0\.1:8081'; do
+            sleep 0.5
+            _wait=$((_wait + 1))
+        done
+    fi
+
+    rm -f "$PROXY_SOCK"
+    echo "Proxy detenido."
 }
 
 # Al salir por cualquier motivo: detener proxy y quitar lock
