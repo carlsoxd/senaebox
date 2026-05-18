@@ -128,8 +128,97 @@ _stop_proxy() {
     echo "Proxy detenido."
 }
 
-# Al salir por cualquier motivo: detener proxy y quitar lock
-trap '_stop_proxy; rm -f "$LOCK_FILE"' EXIT INT TERM
+# =============================================================================
+# Mapeo de C:\users\luis\Downloads → ~/SenaeBox/Descargas
+#
+# Wine registra por default FOLDERID_Downloads = C:\users\luis\Downloads.
+# Pero ese directorio es DENTRO del wineprefix — no es visible para el host.
+#
+# Históricamente el user.js usaba browser.download.dir = "Z:\\home\\luis\\..."
+# (drive Z = / por convención Wine), pero create_wineprefix.sh borra el
+# symlink z: → / como parte del aislamiento de symlinks fugados. Resultado:
+# Z:\ apunta a directorio vacío → Firefox cae al default C:\users\luis\Downloads
+# → descargas terminan en el wineprefix, no en ~/SenaeBox/Descargas.
+#
+# Solución: convertir el directorio Downloads del wineprefix en symlink hacia
+# /home/luis/SenaeBox/Descargas. El bind mount del sandbox monta esa ruta como
+# el directorio real del host. Wine sigue el symlink → escribe en bind →
+# aparece en ~/SenaeBox/Descargas del host. Sin tocar drive letters ni user.js.
+#
+# Idempotente: si el symlink ya está correcto, no hace nada. Si es directorio
+# vacío o symlink incorrecto, lo recrea. Si tiene archivos (descargas previas
+# perdidas en el prefix), los mueve a la carpeta compartida antes de reemplazar.
+# =============================================================================
+
+_ensure_downloads_symlink() {
+    local prefix_downloads="$STATE_DIR/wine/drive_c/users/$(whoami)/Downloads"
+    local shared_downloads="$HOME/SenaeBox/Descargas"
+
+    mkdir -p "$shared_downloads"
+
+    # Caso 1: ya es symlink correcto → no hacer nada
+    if [ -L "$prefix_downloads" ] && [ "$(readlink "$prefix_downloads")" = "$shared_downloads" ]; then
+        return 0
+    fi
+
+    # Caso 2: es directorio (vacío o con archivos perdidos de sesiones anteriores)
+    if [ -d "$prefix_downloads" ] && [ ! -L "$prefix_downloads" ]; then
+        # Rescatar archivos perdidos antes de reemplazar
+        local rescued=0
+        while IFS= read -r -d '' f; do
+            mv -n "$f" "$shared_downloads/" 2>/dev/null && rescued=$((rescued + 1))
+        done < <(find "$prefix_downloads" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+        [ "$rescued" -gt 0 ] && echo "Rescatados $rescued archivos de descargas previas al wineprefix → ~/SenaeBox/Descargas/"
+        rmdir "$prefix_downloads" 2>/dev/null || rm -rf "$prefix_downloads"
+    fi
+
+    # Caso 3: es symlink incorrecto → eliminar
+    [ -L "$prefix_downloads" ] && rm -f "$prefix_downloads"
+
+    # Crear el symlink correcto
+    ln -s "$shared_downloads" "$prefix_downloads"
+    echo "Downloads del wineprefix → ~/SenaeBox/Descargas (symlink creado)"
+}
+
+# =============================================================================
+# Limpieza periódica de archivos *.Identifier (Wine emula Zone.Identifier ADS)
+#
+# Windows marca archivos descargados con el flujo NTFS alternativo
+# Zone.Identifier (Mark of the Web). Wine sobre ext4 generalmente usa el xattr
+# `user.zone.identifier` (no archivo visible), pero en algunas combinaciones
+# crea archivos sufijados como `file.pdf:Zone.Identifier` o `file.pdf.Identifier`.
+#
+# Cleanup en background: cada 5 segundos elimina cualquier archivo sufijado
+# con :Zone.Identifier o .Identifier en la carpeta de descargas. También
+# elimina xattrs user.zone.identifier para que el archivo aparezca "limpio".
+# El loop muere cuando launch.sh termina (trap EXIT mata el PID).
+# =============================================================================
+
+_zone_identifier_cleanup_loop() {
+    local downloads="$HOME/SenaeBox/Descargas"
+    while [ -f "$LOCK_FILE" ]; do
+        # Archivos visibles (caso Wine sin xattr o filesystem sin soporte)
+        find "$downloads" -maxdepth 2 \
+            \( -name '*:Zone.Identifier' -o -name '*.Identifier' -o -name 'Zone.Identifier' \) \
+            -delete 2>/dev/null
+        # xattrs (caso Wine con xattr support en ext4)
+        if command -v setfattr &>/dev/null; then
+            find "$downloads" -maxdepth 2 -type f -print0 2>/dev/null | \
+                xargs -0 -r setfattr -x user.zone.identifier 2>/dev/null
+        fi
+        sleep 5
+    done
+}
+
+_ZONE_CLEANUP_PID=""
+
+# Al salir por cualquier motivo: detener proxy, watcher, quitar lock
+_shutdown() {
+    [ -n "$_ZONE_CLEANUP_PID" ] && kill "$_ZONE_CLEANUP_PID" 2>/dev/null || true
+    _stop_proxy
+    rm -f "$LOCK_FILE"
+}
+trap '_shutdown' EXIT INT TERM
 
 # =============================================================================
 # Primera vez: setup silencioso con barra de progreso
@@ -294,6 +383,13 @@ _invalidate_startup_cache_if_needed() {
 }
 
 _invalidate_startup_cache_if_needed
+
+# Asegurar que Downloads del wineprefix apunte a ~/SenaeBox/Descargas
+_ensure_downloads_symlink
+
+# Arrancar el watcher de Zone.Identifier en background (muere con el trap EXIT)
+_zone_identifier_cleanup_loop &
+_ZONE_CLEANUP_PID=$!
 
 # =============================================================================
 # Auto-parchar xulstore.json: tamaño de ventana corrupto por ciclo Wine/Mutter
