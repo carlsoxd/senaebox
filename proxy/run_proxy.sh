@@ -91,6 +91,45 @@ else
     echo "AVISO: addon_blazeds.py no encontrado en $ADDON_PATH"
 fi
 
+# --- Verificación de defaults TLS antes de arrancar mitmproxy ---
+#
+# Nota técnica importante: mitmproxy 12+ trae como default
+#   tls_version_client_min: TLS1_2
+#   tls_version_server_min: TLS1_2
+# Esto es exactamente nuestra postura de hardening (rechazar SSL3/TLS1.0/1.1).
+#
+# Por qué NO usamos --set tls_version_*=TLS1_2 explícito:
+#   Cuando esas opciones cambian (incluso reasignándolas al mismo valor por
+#   defecto), mitmproxy llama _warn_unsupported_version() que itera sobre
+#   TODAS las versiones TLS conocidas con set_min_proto_version(). OpenSSL 4.0+
+#   rechaza protocolos viejos con error en vez de "no soportado silente",
+#   causando crash al arranque (verificado en mitmproxy 12.2.3 + OpenSSL 4.0.0).
+#
+# En vez de eso, verificamos que los defaults sean lo que esperamos. Si una
+# versión futura de mitmproxy baja los defaults, abortamos con error claro.
+TLS_CLIENT_MIN=$(mitmdump --options 2>/dev/null | awk '/^tls_version_client_min:/ {print $2; exit}')
+TLS_SERVER_MIN=$(mitmdump --options 2>/dev/null | awk '/^tls_version_server_min:/ {print $2; exit}')
+
+_ge_tls12() {
+    case "$1" in
+        TLS1_2|TLS1_3) return 0 ;;
+        *)             return 1 ;;
+    esac
+}
+
+if ! _ge_tls12 "$TLS_CLIENT_MIN"; then
+    echo "ERROR: mitmproxy default tls_version_client_min es '$TLS_CLIENT_MIN' (se requiere ≥TLS1_2)."
+    echo "       Esta versión de mitmproxy no cumple con la postura de seguridad."
+    echo "       Actualiza mitmproxy o reporta este issue: pip install --upgrade mitmproxy"
+    exit 1
+fi
+if ! _ge_tls12 "$TLS_SERVER_MIN"; then
+    echo "ERROR: mitmproxy default tls_version_server_min es '$TLS_SERVER_MIN' (se requiere ≥TLS1_2)."
+    echo "       Mitmproxy aceptaría conexiones upstream con TLS antiguo. Abortando."
+    exit 1
+fi
+echo "  TLS hardening: client_min=$TLS_CLIENT_MIN, server_min=$TLS_SERVER_MIN (defaults OK)"
+
 mitmdump \
     --listen-host "$MITM_HOST" \
     --listen-port "$MITM_PORT" \

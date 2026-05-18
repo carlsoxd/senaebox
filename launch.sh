@@ -296,6 +296,80 @@ _invalidate_startup_cache_if_needed() {
 _invalidate_startup_cache_if_needed
 
 # =============================================================================
+# Auto-parchar xulstore.json: tamaño de ventana corrupto por ciclo Wine/Mutter
+#
+# Bug irreparable a nivel sandbox:
+#   1. Usuario click "Restaurar" del WM sobre ventana maximizada
+#   2. Mutter manda ConfigureRequest con "tamaño anterior" — pero la ventana
+#      nació maximized, Mutter no tiene previous size guardado
+#   3. Wine devuelve WM_GETMINMAXINFO con defaults de Windows (~112×27)
+#   4. Mutter manda WM_SIZE con ~80×25 (peor por margen de decoración)
+#   5. Firefox acepta y guarda ese tamaño en xulstore.json
+#   6. Siguiente arranque: ventana abre tiny porque xulstore tiene 80×25
+#
+# Mitigaciones intentadas que NO funcionaron:
+#   - browser.window.width/height en user.js → no overridea xulstore
+#   - userChrome.css min-width: 800px → solo afecta layout XUL interno, no la
+#     ventana del WM que ya colapsó
+#   - Pre-parchar xulstore una sola vez → Firefox lo re-corrompe en la siguiente
+#     sesión donde el usuario interactúa con el botón restaurar
+#
+# Esta función: parchar xulstore en CADA launch antes de que Firefox arranque,
+# si main-window tiene tamaño irrazonable. Forzar sizemode=normal para que
+# Mutter aprenda el tamaño natural primero (si el usuario maximiza después,
+# Mutter recordará 1280×720 como previous → restaurar funciona correctamente).
+# =============================================================================
+
+_fix_xulstore_window_size() {
+    local xulstore="$PROFILE_DIR/xulstore.json"
+    [ -f "$xulstore" ] || return 0
+
+    python3 - "$xulstore" << 'PYEOF'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        data = json.load(f)
+except Exception as e:
+    print(f"xulstore no parseable: {e}", file=sys.stderr)
+    sys.exit(0)
+
+key = "chrome://browser/content/browser.xul"
+mw = data.get(key, {}).get("main-window")
+if not mw:
+    sys.exit(0)
+
+try:
+    width  = int(float(mw.get("width",  "1280")))
+    height = int(float(mw.get("height", "720")))
+except (ValueError, TypeError):
+    width, height = 0, 0
+
+# Sano = al menos 800×600. Cualquier cosa menor es resultado del bug
+# Wine/Mutter de WM_GETMINMAXINFO.
+if width >= 800 and height >= 600:
+    sys.exit(0)
+
+mw["width"]  = "1280"
+mw["height"] = "720"
+mw["screenX"] = "320"
+mw["screenY"] = "180"
+# Forzar sizemode=normal: si arranca maximized, Mutter nunca aprende el
+# tamaño natural y el bug se reproduce. Normal → usuario maximiza manualmente
+# si quiere, Mutter recuerda 1280×720 para restaurar correctamente.
+mw["sizemode"] = "normal"
+
+data[key]["main-window"] = mw
+with open(path, "w") as f:
+    json.dump(data, f, separators=(",", ":"))
+
+print(f"xulstore reparado: tamaño anterior {width}×{height} → 1280×720 (sizemode=normal)", file=sys.stderr)
+PYEOF
+}
+
+_fix_xulstore_window_size
+
+# =============================================================================
 # Abrir el browser (bloqueante)
 # =============================================================================
 

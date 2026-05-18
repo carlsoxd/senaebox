@@ -112,3 +112,82 @@ Lograr que `SENAE_browser.exe` arranque dentro de Wine 32-bit en Fedora, con Fla
 - Estrategia proxy: mitmproxy en desarrollo, Go en producción ✅
 - Verificación SHA-256 requerida antes de instalar binarios ✅
 - Si en pruebas aparece token USB físico: añadir pcscd socket al sandbox
+
+---
+
+## Threat model — riesgos aceptados (auditoría Senior, 18/05/2026)
+
+El sandbox de SenaeBox usa bubblewrap con namespace de red aislado y un proxy
+TLS que intercepta todo el tráfico. Las siguientes superficies de ataque son
+**riesgos aceptados** por restricciones técnicas de la pila, no descuidos. Si
+en el futuro se ataca alguna, considerar las mitigaciones listadas.
+
+### Riesgo aceptado #1 — Acceso al socket X11 del host
+
+**Qué**: el sandbox monta `$X11_SOCKET` (típicamente `/tmp/.X11-unix/X0`) como
+read-only para que Wine pueda renderizar ventanas en el escritorio del host.
+
+**Implicación**: cualquier código dentro del sandbox (exploit de Flash, Java,
+Firefox 41) tiene acceso al X server del usuario y puede:
+- Keylogging (`XGrabKeyboard` / `XQueryKeymap`) — todas las teclas del host
+- Screen capture (`XGetImage`) de cualquier ventana
+- Input injection (`XTestFakeKeyEvent`) — inyectar en cualquier app del host
+- Clipboard exfiltration vía X11 selections
+
+**Por qué se acepta**: Wine no soporta Wayland nativo de forma estable en la
+versión 8.0-staging que usamos. Las alternativas (Xpra/xpra-ng/Xephyr) añaden
+latencia y complejidad, y rompen aspectos del rendering de Flash. El modelo
+de amenaza realista: si Ecuapass (servidor de gobierno) sirve un SWF malicioso
+firmado por su propia CA, ya tenemos un problema mayor que cualquier sandbox
+puede mitigar.
+
+**Mitigación futura si se requiere**: investigar Xephyr corriendo dentro del
+sandbox; Wine se conecta solo a ese X server anidado. Costo: ~50ms latencia
+de input y posibles bugs de redraw bajo nuestro compositor básico.
+
+### Riesgo aceptado #2 — IPC namespace compartido con el host
+
+**Qué**: el sandbox **no** usa `--unshare-ipc`. El namespace System V IPC se
+comparte con el resto de procesos del usuario.
+
+**Implicación**: código dentro del sandbox puede:
+- Enumerar segmentos shmem del host (`ipcs -m`)
+- Adjuntarse a segmentos con permisos liberales (mode 0666)
+- Inyectar mensajes en colas SysV
+- Bloquear semáforos sistémicos (DoS local)
+
+**Por qué se acepta**: Wine's `winex11.drv` usa MIT-SHM (`XShmPutImage`) para
+renderizado rápido. Crea segmentos shmget() que el X server (en el namespace
+IPC del host) tiene que adjuntar via `XShmAttach`. Con `--unshare-ipc`, esos
+adjuntamientos fallan con BadAccess y el error handler de Wine en Firefox 41
+no lo recupera → plugin-container crashea con `mozglue+0x25be int $3`.
+
+GNOME moderno usa principalmente POSIX IPC y DBus, no SysV. La mayoría de
+apps del host no exponen IPC SysV de forma explotable.
+
+**Mitigación futura si se requiere**: investigar XShm con sockets Unix
+(extensión MIT-SHM-FD) si Wine la implementa en versiones futuras. Mientras
+tanto, documentar el riesgo y monitorear apps del host que usen SysV IPC.
+
+---
+
+## Decisiones de diseño documentadas (no cambiar sin razón)
+
+- **`browser.zoom.full = true` + userContent.css `@-moz-document`**: zoom por
+  sitio para dominios Ecuapass. Los SWF de Flash no se ven afectados por CSS
+  zoom (NPAPI windowed plugin renderiza en XWindow propia, fuera del pipeline
+  de Firefox). Ver [memoria](.claude/projects/-home-luis-senaebox/memory/project_flash_zoom_limitation.md).
+
+- **`LogPixels` = `Xft.dpi` del sistema** (espejo, sin cálculo): Wine refleja
+  exactamente el DPI que XWayland reporta. Cualquier compensación matemática
+  rompe a alguna escala.
+
+- **`xulstore.json` auto-parche en cada launch**: Wine devuelve MINMAXINFO
+  defectuoso a Mutter; Firefox guarda tamaños tiny tras restaurar. Único fix
+  estable: forzar `width≥1280`, `height≥720`, `sizemode=normal` antes de cada
+  arranque.
+
+- **`startupCache` invalidación condicional**: Firefox 41 cachea todo
+  `chrome/` y solo lo invalida en cambio de BuildID. `launch.sh` borra el
+  cache si algún archivo en `chrome/` es más nuevo, para que userChrome.css
+  y userContent.css surtan efecto cuando se editan.

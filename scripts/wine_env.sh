@@ -57,7 +57,16 @@ _senaebox_find_wine() {
 
     # 4. Wine del sistema — solo si soporta WINEARCH=win32
     if command -v wine &>/dev/null; then
-        local test_dir="/tmp/senaebox_wine32_test_$$"
+        # mktemp -d con XXXXXX → directorio aleatorio no predecible y con
+        # permisos 0700 atómicamente. Reemplaza /tmp/...$$ que era vulnerable
+        # a TOCTOU: un atacante local con shell del mismo usuario podía
+        # predecir el PID y pre-crear el path como symlink hacia un destino
+        # crítico antes de que `wineboot --init` escribiera dentro.
+        local test_dir
+        if ! test_dir=$(mktemp -d /tmp/senaebox_wine32_test_XXXXXX 2>/dev/null); then
+            echo "  ERROR: no se pudo crear directorio temporal para probar wine" >&2
+            return 1
+        fi
         if WINEDEBUG=-all WINEARCH=win32 WINEPREFIX="$test_dir" \
                wine wineboot --init &>/dev/null; then
             rm -rf "$test_dir"

@@ -90,17 +90,36 @@ WINEPREFIX="$WINEPREFIX_DIR" WINEARCH=win32 \
     || echo "[setup] ADVERTENCIA: win7 falló — continuando." >&2
 
 # =============================================================================
-# 4. Verificar que el SENAE Browser está en su lugar
+# 4. Verificar que el SENAE Browser está en su lugar + integridad
 # =============================================================================
 
 step 38 "Verificando archivos del SENAE Browser..."
 
 SENAE_EXE="$WINEPREFIX_DIR/drive_c/users/$WINE_USER/Documents/SENAE browser/SENAE_browser_portable.exe"
 
+# SHA-256 del SENAE_browser_portable.exe oficial entregado por SENAE Aduana
+# del Ecuador (versión PortableApps 41.0.2.0, BuildID 20170629101550).
+# Hash obtenido el 2026-05-18 del archivo en uso por el equipo de desarrollo.
+# Tamaño esperado: 218,961 bytes.
+#
+# Si SENAE publica una nueva versión, actualizar este hash con el del binario
+# oficial. Para sobrescribir manualmente (ej. desarrollo): exportar
+# SENAEBOX_SKIP_BROWSER_HASH=1 antes de correr el setup.
+SENAE_PORTABLE_SHA256="8886ceb86fe64315903ca89ef441e545d6af0779aef4b80f59540dffbf5dd79f"
+
 if [ ! -f "$SENAE_EXE" ]; then
     fail "No se encontró SENAE_browser_portable.exe en:\n$SENAE_EXE\n\nCopia la carpeta 'SENAE browser' a esa ruta antes de continuar."
 fi
-echo "[setup] SENAE Browser: OK" >&2
+
+if [ "${SENAEBOX_SKIP_BROWSER_HASH:-0}" = "1" ]; then
+    echo "[setup] AVISO: SENAEBOX_SKIP_BROWSER_HASH=1 — verificación de hash omitida" >&2
+else
+    ACTUAL_HASH=$(sha256sum "$SENAE_EXE" | awk '{print $1}')
+    if [ "$ACTUAL_HASH" != "$SENAE_PORTABLE_SHA256" ]; then
+        fail "Hash SHA-256 de SENAE_browser_portable.exe no coincide.\n\n  Esperado: $SENAE_PORTABLE_SHA256\n  Obtenido: $ACTUAL_HASH\n\nEl binario puede estar corrupto, ser una versión diferente, o haber sido modificado. No se continúa por seguridad.\n\nPara forzar (solo si confías en la fuente): SENAEBOX_SKIP_BROWSER_HASH=1 bash launch.sh"
+    fi
+    echo "[setup] SENAE Browser: hash verificado OK" >&2
+fi
 
 # =============================================================================
 # 5. Instalar JRE 7u15 (opcional — solo si el instalador está disponible)

@@ -105,26 +105,48 @@ fi
 #    se preserva — es preferencia del usuario sobre un sitio no gestionado).
 # ---------------------------------------------------------------------------
 
-if [ -f "$MARKER_V1" ] && [ -f "$DB" ] && command -v sqlite3 &>/dev/null; then
-    echo "[configure_zoom] Migrando de v1 a v2: reset de fullZoom en DB para dominios gestionados..."
-    for domain in "${DOMAINS[@]}"; do
-        old_value=$(sqlite3 "$DB" "
+if [ -f "$MARKER_V1" ] && [ -f "$DB" ]; then
+    if ! command -v python3 &>/dev/null; then
+        echo "[configure_zoom] python3 no disponible — saltando migración v1→v2 (no crítico)"
+    else
+        echo "[configure_zoom] Migrando de v1 a v2: reset de fullZoom en DB para dominios gestionados..."
+
+        # Queries parametrizadas en Python (sqlite3.execute con ?) — previene SQL
+        # injection si DOMAINS llega algún día a parametrizarse externamente.
+        # Pasamos los dominios como argv para que el shell los entregue al Python
+        # como argumentos POSIX (sin interpolación de string en la query).
+        python3 - "$DB" "${DOMAINS[@]}" << 'PYEOF'
+import sqlite3, sys
+db_path = sys.argv[1]
+domains = sys.argv[2:]
+SETTING = "browser.content.full-zoom"
+
+conn = sqlite3.connect(db_path)
+cur  = conn.cursor()
+try:
+    for domain in domains:
+        cur.execute("""
             SELECT p.value FROM prefs p
               JOIN groups   g ON p.groupID   = g.id
               JOIN settings s ON p.settingID = s.id
-             WHERE g.name = '$domain'
-               AND s.name = 'browser.content.full-zoom';
-        " 2>/dev/null)
+             WHERE g.name = ? AND s.name = ?
+        """, (domain, SETTING))
+        row = cur.fetchone()
+        if row is None:
+            continue
+        old_value = row[0]
 
-        if [ -n "$old_value" ]; then
-            sqlite3 "$DB" "
-                DELETE FROM prefs
-                 WHERE groupID   = (SELECT id FROM groups   WHERE name = '$domain')
-                   AND settingID = (SELECT id FROM settings WHERE name = 'browser.content.full-zoom');
-            " 2>/dev/null || true
-            echo "  $domain: fullZoom $old_value en DB borrado (ahora se aplica CSS zoom $ZOOM)"
-        fi
-    done
+        cur.execute("""
+            DELETE FROM prefs
+             WHERE groupID   = (SELECT id FROM groups   WHERE name = ?)
+               AND settingID = (SELECT id FROM settings WHERE name = ?)
+        """, (domain, SETTING))
+        print(f"  {domain}: fullZoom {old_value} en DB borrado")
+    conn.commit()
+finally:
+    conn.close()
+PYEOF
+    fi
     rm -f "$MARKER_V1"
 fi
 

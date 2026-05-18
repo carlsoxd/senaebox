@@ -14,13 +14,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WINEPREFIX_DIR="$HOME/.local/share/senaebox/wine"
 
-# SHA-256 esperado del instalador oficial jre715.exe.
-# Deja vacío para que el script te muestre el hash del archivo
-# y te pida confirmación manual antes de continuar.
+# SHA-256 del instalador oficial Oracle JRE 7 Update 15 (jre715.exe, 32-bit).
 #
-# Una vez que verifiques que el hash es correcto, pégalo aquí para
-# que futuras ejecuciones sean automáticas y seguras.
-EXPECTED_SHA256=""
+# Hash obtenido el 2026-05-18 del archivo distribuido con el SENAE Browser
+# portable que SENAE Aduana del Ecuador entrega oficialmente a sus usuarios
+# (carpeta Installers/ dentro del bundle). Tamaño esperado: 31,512,992 bytes.
+#
+# Verificación manual: sha256sum jre715.exe
+#
+# Si esta verificación falla, el instalador puede estar corrupto o haber sido
+# modificado en tránsito. NO instalar — descartar el archivo y obtener una
+# copia desde fuente oficial (typeally https://www.oracle.com/java/technologies/
+# javase/javase-archive-downloads.html requiere cuenta Oracle).
+EXPECTED_SHA256="850f048cb72152a1cc9696a8fa9f70e2c2d219151b1fbb9e8d2d3132bf566b48"
 
 echo "=== SenaeBox — Instalar Java JRE 7u15 ==="
 echo ""
