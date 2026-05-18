@@ -287,6 +287,12 @@ BWRAP_ARGS=(
     --setenv HOME                  "$HOME"
     --setenv USER                  "$WINE_USER"
     --setenv LOGNAME               "$WINE_USER"
+    # WINEDEBUG=-all: silencia TODOS los canales de debug de Wine (fixme/err/warn/trace).
+    # Sin esto, el bwrap_*.log puede acumular información sobre paths de archivos,
+    # llamadas a syscalls e (potencialmente) URLs si Wine wininet/winhttp se activa.
+    # El log Wine queda con solo los echos del inner script (ip link, socat startup,
+    # wineserver --wait) — diagnóstico mínimo sin filtración de datos del usuario.
+    --setenv WINEDEBUG             "-all"
     # Usadas por el script interno del sandbox (ver sección siguiente)
     --setenv WINE_BIN              "$WINE_BIN"
     --setenv SENAE_EXE_WIN         "$SENAE_EXE_WIN"

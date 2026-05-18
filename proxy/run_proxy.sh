@@ -143,19 +143,43 @@ if [ ! -f "$SENAEBOX_CA_DIR/mitmproxy-ca.pem" ]; then
     exit 1
 fi
 
-mitmdump \
-    --listen-host "$MITM_HOST" \
-    --listen-port "$MITM_PORT" \
-    --set stream_large_bodies=100k \
-    --set confdir="$SENAEBOX_CA_DIR" \
-    "${ADDON_ARGS[@]}" \
-    "${FLOW_ARGS[@]}" \
-    &
+# --- Política de cero persistencia del tráfico interceptado ---
+#
+# Por defecto: stdout/stderr de mitmdump → /dev/null. Sin redirigir, los logs
+# de cada request HTTPS (URL, host, status code, headers) terminan escritos en
+# el launcher_*.log porque mitmdump (lanzado con &) hereda los FDs del padre
+# (`bash run_proxy.sh --bg >> "$LAUNCHER_LOG"` desde launch.sh). Eso significa
+# que cada visita a Ecuapass deja un registro permanente del tráfico en disk.
+#
+# La redirección explícita >/dev/null 2>&1 corta esa cadena: mitmdump ya no
+# tiene FDs apuntando a archivos del host. Defense in depth con flow_detail=0
+# (oculta path/método/status en consola) y termlog_verbosity=warn (no log de
+# eventos de conexión normales).
+#
+# Modo captura (SENAE_CAPTURE=1): mantiene stdout heredado + save-stream-file
+# para diagnóstico. Solo activar conscientemente cuando se necesite analizar.
+MITM_ARGS=(
+    --listen-host "$MITM_HOST"
+    --listen-port "$MITM_PORT"
+    --set stream_large_bodies=100k
+    --set confdir="$SENAEBOX_CA_DIR"
+    "${ADDON_ARGS[@]}"
+    "${FLOW_ARGS[@]}"
+)
+
+if [[ "${SENAE_CAPTURE:-0}" == "1" ]]; then
+    # Captura activa: ver todo en stdout + persistir flows
+    mitmdump "${MITM_ARGS[@]}" &
+else
+    # Cero persistencia: silenciar consola + descartar FDs
+    mitmdump "${MITM_ARGS[@]}" \
+        --set flow_detail=0 \
+        --set termlog_verbosity=warn \
+        </dev/null >/dev/null 2>&1 &
+fi
 # confdir: directorio donde mitmproxy busca mitmproxy-ca.pem (key+cert) para
-# firmar certs leaf. Apunta a la CA de SenaeBox (distribuida en assets/),
-# NO a la CA personal de ~/.mitmproxy/. Cada instalación usa la misma CA →
-# el cert8.db pre-generado en assets/ ya confía en ella sin necesidad de
-# Podman ni certutil en runtime.
+# firmar certs leaf. Apunta a la CA propia del usuario en ~/.local/share/
+# senaebox/ca/, NO a la CA personal de ~/.mitmproxy/.
 MITM_PID=$!
 
 # Esperar a que mitmproxy esté escuchando en el puerto.
