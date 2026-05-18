@@ -340,10 +340,12 @@ fi
 # de entorno inyectadas por --setenv (el heredoc usa 'INNER_EOF' para no expandirlas
 # en el script exterior).
 #
-# xrdb ajusta el DPI reportado por XWayland a todas las ventanas de la sesión X.
-# Valor 120 = 125% de 96 DPI, calibrado para el HP EliteBook 840 G8 (1920×1080, 14").
-# Nota: xrdb actúa sobre el X server global porque el socket se comparte;
-# el ajuste es visible fuera del sandbox mientras el browser esté abierto.
+# NO TOCAR xrdb DESDE ESTE SCRIPT.
+# El DPI se maneja exclusivamente vía Firefox user.js (layout.css.devPixelsPerPx,
+# layout.css.dpi, ui.textScaleFactor) + el registro Wine (LogPixels=0x78=120).
+# xrdb -override contamina el X server compartido con XWayland: cambia el DPI de
+# todas las apps GTK del host mientras el browser está abierto, y Firefox bajo Wine
+# no lee Xft.dpi de todas formas (solo lo leen apps X11 nativas).
 
 INNER_SCRIPT=$(mktemp /tmp/senaebox_inner_XXXXXX.sh)
 trap 'rm -f "$INNER_SCRIPT"' EXIT
@@ -366,8 +368,6 @@ trap 'kill "$SOCAT_PID" 2>/dev/null' EXIT
 
 # Breve espera para que socat esté escuchando antes de que Firefox haga su primera request
 sleep 0.5
-
-xrdb -override <<< 'Xft.dpi: 120'
 
 # Lanza el launcher PortableApps — hace el setup del perfil, crea Firefox y sale.
 "$WINE_BIN" "$SENAE_EXE_WIN"

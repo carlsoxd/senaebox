@@ -233,6 +233,69 @@ done
 echo "Proxy listo."
 
 # =============================================================================
+# Aplicar configuración de registro Wine (DPI, virtual desktop, X11 Driver)
+#
+# Este paso DEBE correr fuera del sandbox y matar el wineserver para que
+# el wineserver del sandbox arranque con el registro ya correcto. Es lo que
+# hace que el chrome de Firefox se escale a 125% (LogPixels=120 leído por
+# GetDeviceCaps en el primer arranque del wineserver).
+#
+# El script es idempotente: si todo ya está aplicado solo lee los .reg
+# (no spawnea wine) y sale en ~0.1 s.
+# =============================================================================
+
+bash "$REPO_DIR/scripts/fix_wine_registry.sh" >> "$LAUNCHER_LOG" 2>&1 \
+    || echo "ADVERTENCIA: fix_wine_registry.sh falló — continuando con valores actuales del registro."
+
+# Aplicar zoom 125% inicial para dominios de Ecuapass (idempotente vía marker).
+# Sale en <100ms si ya se aplicó. Wine no debe estar corriendo (la DB de Firefox
+# se locked si el browser está abierto), así que va después de fix_wine_registry.sh
+# que mata el wineserver.
+bash "$REPO_DIR/scripts/configure_zoom.sh" >> "$LAUNCHER_LOG" 2>&1 \
+    || echo "ADVERTENCIA: configure_zoom.sh falló — el zoom se puede ajustar manualmente con Ctrl+."
+
+# =============================================================================
+# Invalidar startupCache si chrome/ tiene archivos más nuevos
+#
+# Firefox 41 cachea TODO el contenido de chrome/ (userChrome.css, userContent.css,
+# XUL, JS) en <profile>/startupCache/startupCache.4.little. La invalidación
+# natural de este cache solo ocurre cuando cambia el BuildID de Firefox
+# (comparado con compatibility.ini LastVersion). NUNCA se invalida por cambios
+# en archivos del profile.
+#
+# Esto significa que cualquier edición de chrome/userChrome.css o
+# chrome/userContent.css por parte de SenaeBox queda ignorada hasta que el
+# cache se invalide manualmente. Síntomas observados:
+#   - userChrome.css que oculta "Pantalla completa" sin efecto visible
+#   - userContent.css con zoom @-moz-document sin efecto en las páginas
+#
+# Fix: borrar startupCache si DETECTAMOS que algún archivo en chrome/ es más
+# nuevo que el cache. Firefox lo regenera en el próximo arranque (~2-3 s extra
+# una sola vez), garantizando que nuestros archivos se procesen.
+# =============================================================================
+
+_invalidate_startup_cache_if_needed() {
+    local cache_dir="$PROFILE_DIR/startupCache"
+    local chrome_dir="$PROFILE_DIR/chrome"
+    local cache_file="$cache_dir/startupCache.4.little"
+
+    [ -d "$chrome_dir" ] || return 0
+
+    if [ ! -f "$cache_file" ]; then
+        # No hay cache aún (primer arranque o ya invalidado) — nada que hacer
+        return 0
+    fi
+
+    # ¿Algún archivo en chrome/ es más nuevo que el cache?
+    if [ -n "$(find "$chrome_dir" -type f -newer "$cache_file" -print -quit 2>/dev/null)" ]; then
+        echo "chrome/ modificado tras último cache — invalidando startupCache para forzar recarga."
+        rm -rf "$cache_dir"
+    fi
+}
+
+_invalidate_startup_cache_if_needed
+
+# =============================================================================
 # Abrir el browser (bloqueante)
 # =============================================================================
 
