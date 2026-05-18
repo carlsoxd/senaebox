@@ -8,7 +8,7 @@
 #
 # Requisitos previos (en terminales separadas o --bg):
 #   bash proxy/run_proxy.sh          # arranca mitmproxy + socat externo
-#   bash scripts/install_proxy_cert.sh   # primera vez: instala CA en Firefox
+#   bash scripts/setup_first_run.sh  # primera vez: genera CA + cert8.db de Firefox
 #
 # Flujo de red dentro del sandbox:
 #   Firefox → socat TCP 127.0.0.1:8080 → UNIX /tmp/senaebox-proxy.sock
@@ -116,8 +116,8 @@ if [ ! -S "$PROXY_SOCK" ]; then
     echo "  Inicia el proxy en otra terminal:"
     echo "    bash proxy/run_proxy.sh"
     echo ""
-    echo "  Primera vez: instala también el certificado CA:"
-    echo "    bash scripts/install_proxy_cert.sh"
+    echo "  Primera vez: corre el setup que genera CA + cert8.db de Firefox:"
+    echo "    bash scripts/setup_first_run.sh"
     exit 1
 fi
 echo "  Proxy   : $PROXY_SOCK (activo)"

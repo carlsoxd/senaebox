@@ -167,28 +167,143 @@ else
 fi
 
 # =============================================================================
-# 7. Generar certificado CA de mitmproxy
+# 7. Generar CA única para este usuario (NO viene del repo)
+#
+# A diferencia de la versión anterior que shipaba una CA estática en assets/
+# (cualquiera con acceso al repo tenía la clave privada para firmar certs
+# arbitrarios), aquí cada instalación genera SU PROPIA CA con openssl.
+# La clave privada nunca sale del sistema del usuario, y solo es trusted por
+# el Firefox de ESTE SenaeBox install.
+#
+# Permisos: directorio 700 (solo el usuario lo puede listar), key 600
+# (otros usuarios del sistema no pueden leerla).
 # =============================================================================
 
-step 75 "Generando certificado de seguridad del proxy..."
+step 70 "Generando CA propia de este sistema..."
 
-MITM_CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
+CA_DST_DIR="$STATE_DIR/ca"
+CA_KEY="$CA_DST_DIR/senaebox-ca-key.pem"
+CA_CERT="$CA_DST_DIR/mitmproxy-ca-cert.pem"
+CA_COMBINED="$CA_DST_DIR/mitmproxy-ca.pem"   # mitmproxy busca este nombre
 
-if [ ! -f "$MITM_CERT" ]; then
-    echo "[setup] Iniciando mitmproxy brevemente para generar CA..." >&2
-    # Arrancar mitmdump un momento solo para que genere la CA
-    mitmdump --listen-host 127.0.0.1 --listen-port 18081 &
-    MITM_INIT_PID=$!
-    sleep 3
-    kill "$MITM_INIT_PID" 2>/dev/null || true
-    wait "$MITM_INIT_PID" 2>/dev/null || true
+mkdir -p "$CA_DST_DIR"
+chmod 700 "$CA_DST_DIR"
 
-    if [ ! -f "$MITM_CERT" ]; then
-        fail "mitmproxy no generó el certificado CA en $MITM_CERT"
-    fi
-    echo "[setup] Certificado CA generado." >&2
+if [ -f "$CA_KEY" ] && [ -f "$CA_CERT" ] && [ -f "$CA_COMBINED" ]; then
+    echo "[setup] CA ya existe en $CA_DST_DIR — no se regenera (borra el dir para forzar)" >&2
 else
-    echo "[setup] Certificado CA ya existe." >&2
+    # Config OpenSSL inline — CA constraints estándar para una root CA self-signed
+    OSSL_CFG=$(mktemp /tmp/senaebox_ossl_XXXXXX.cnf)
+    cat > "$OSSL_CFG" << 'EOF'
+[req]
+distinguished_name = req_dn
+x509_extensions    = ca_ext
+prompt             = no
+[req_dn]
+CN = SenaeBox CA (Local)
+O  = SenaeBox
+OU = TLS Inspection for Ecuapass
+C  = EC
+[ca_ext]
+basicConstraints     = critical, CA:TRUE
+keyUsage             = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+EOF
+    openssl req -newkey rsa:2048 -nodes -x509 -days 3650 \
+        -config "$OSSL_CFG" \
+        -keyout "$CA_KEY" \
+        -out    "$CA_CERT" 2>/dev/null \
+        || fail "openssl falló al generar la CA."
+    rm -f "$OSSL_CFG"
+
+    # mitmproxy lee mitmproxy-ca.pem (key + cert concatenados)
+    cat "$CA_KEY" "$CA_CERT" > "$CA_COMBINED"
+
+    chmod 600 "$CA_KEY" "$CA_COMBINED"
+    chmod 644 "$CA_CERT"
+    echo "[setup] CA generada en $CA_DST_DIR/ (única para este sistema)" >&2
+fi
+
+# =============================================================================
+# 7b. Generar cert8.db con la CA importada (vía podman temporal)
+#
+# Firefox 41 usa NSS 3.20 con cert8.db en formato DBM. Fedora 44+ eliminó el
+# backend DBM en NSS, así que el certutil del host no puede escribir cert8.db.
+# Workaround: AlmaLinux 8 (NSS 3.67, con DBM) corriendo en un contenedor podman.
+#
+# Si el usuario ya tiene podman instalado → usar y NO desinstalar al final.
+# Si NO lo tiene → instalar via pkexec (1 prompt root), usar, desinstalar al
+# final (1 prompt root más, combinable). Total: máximo 1 ciclo de prompts y
+# solo en setup, nunca en arranques posteriores.
+# =============================================================================
+
+step 80 "Importando CA al cert8.db de Firefox..."
+
+PROFILE_DIR_FF="$WINEPREFIX_DIR/drive_c/users/$WINE_USER/Documents/SENAE browser/Data/profile"
+CERT8_TARGET="$PROFILE_DIR_FF/cert8.db"
+CERT8_MARKER="$STATE_DIR/.cert8_ca_subject_sha"
+
+# Hash del subject de NUESTRA CA (cambia si regeneramos) — sirve como marker
+# para detectar si cert8.db necesita re-generación.
+CA_SUBJECT_HASH=$(openssl x509 -in "$CA_CERT" -noout -subject_hash 2>/dev/null)
+STORED_HASH=$(cat "$CERT8_MARKER" 2>/dev/null || echo "")
+
+if [ -f "$CERT8_TARGET" ] && [ "$CA_SUBJECT_HASH" = "$STORED_HASH" ]; then
+    echo "[setup] cert8.db ya tiene la CA correcta — skip podman" >&2
+else
+    echo "[setup] cert8.db necesita regenerarse con la CA nueva" >&2
+
+    # Verificar/instalar podman
+    PODMAN_PRE_EXISTING=true
+    if ! command -v podman &>/dev/null; then
+        PODMAN_PRE_EXISTING=false
+        echo "[setup] Podman no instalado. Solicitando install vía pkexec..." >&2
+        if command -v pkexec &>/dev/null; then
+            pkexec dnf install -y podman \
+                || fail "No se pudo instalar podman vía pkexec. Cancela el setup y ejecuta manualmente: sudo dnf install podman"
+        else
+            fail "Podman no instalado y pkexec no disponible.\nInstala manualmente: sudo dnf install podman\nLuego re-corre el setup."
+        fi
+        # Marker para registrar que NOSOTROS lo instalamos
+        touch "$STATE_DIR/.podman_installed_by_senaebox"
+        echo "[setup] Podman instalado (se desinstalará al final si no había nada antes)" >&2
+    else
+        echo "[setup] Podman ya estaba instalado — no se tocará al final" >&2
+    fi
+
+    # Backup si existía cert8.db previo
+    if [ -f "$CERT8_TARGET" ]; then
+        cp "$CERT8_TARGET" "$CERT8_TARGET.bak.$(date +%Y%m%d_%H%M%S)"
+    fi
+
+    # Generar cert8.db en staging y mover al profile
+    CERT8_STAGING=$(mktemp -d /tmp/senaebox_cert8_XXXXXX)
+    podman run --rm \
+        -v "$CERT8_STAGING:/profile:Z" \
+        -v "$CA_CERT:/ca.pem:ro,Z" \
+        almalinux:8 \
+        bash -c "
+            dnf install -y nss-tools -q &>/dev/null
+            certutil -d dbm:/profile -N --empty-password
+            certutil -d dbm:/profile -A -n 'SenaeBox CA' -t 'CT,,' -i /ca.pem
+        " >&2 || fail "podman/certutil falló al generar cert8.db"
+
+    mv "$CERT8_STAGING/cert8.db" "$CERT8_TARGET"
+    rm -rf "$CERT8_STAGING"
+    echo "$CA_SUBJECT_HASH" > "$CERT8_MARKER"
+    echo "[setup] cert8.db instalado con la CA local en $CERT8_TARGET" >&2
+
+    # Si fuimos NOSOTROS quienes instalamos podman, desinstalarlo ahora
+    if [ "$PODMAN_PRE_EXISTING" = false ] && [ -f "$STATE_DIR/.podman_installed_by_senaebox" ]; then
+        echo "[setup] Desinstalando podman (lo instalamos solo para este setup)..." >&2
+        if pkexec dnf remove -y podman; then
+            rm -f "$STATE_DIR/.podman_installed_by_senaebox"
+            echo "[setup] Podman desinstalado. Arranques posteriores no lo necesitan." >&2
+        else
+            echo "[setup] ADVERTENCIA: no se pudo desinstalar podman automáticamente." >&2
+            echo "[setup] Para removerlo manualmente: sudo dnf remove podman" >&2
+        fi
+    fi
 fi
 
 # =============================================================================

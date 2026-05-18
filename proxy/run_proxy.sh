@@ -14,8 +14,8 @@
 #   bash proxy/run_proxy.sh          # primer plano (Ctrl+C para detener)
 #   bash proxy/run_proxy.sh --bg     # segundo plano, PID en /tmp/senaebox-proxy.pid
 #
-# Primera vez (instalar CA de mitmproxy en Firefox):
-#   bash scripts/install_proxy_cert.sh
+# Primera vez (generar CA local y poblar cert8.db de Firefox):
+#   bash scripts/setup_first_run.sh
 
 set -euo pipefail
 
@@ -30,6 +30,12 @@ BG_MODE=false
 PID_FILE="/tmp/senaebox-proxy.pid"
 STATE_DIR="${STATE_DIR:-$HOME/.local/share/senaebox}"
 LOG_DIR="$STATE_DIR/logs"
+
+# CA propia de SenaeBox (no la personal de mitmproxy en ~/.mitmproxy/).
+# El directorio contiene mitmproxy-ca.pem (key + cert combinados) que mitmdump
+# usa para firmar dinámicamente certificados leaf para cada dominio HTTPS.
+# Copiada desde assets/ por setup_first_run.sh con permisos 700/600.
+SENAEBOX_CA_DIR="$STATE_DIR/ca"
 
 [[ "${1:-}" == "--bg" ]] && BG_MODE=true
 
@@ -130,13 +136,26 @@ if ! _ge_tls12 "$TLS_SERVER_MIN"; then
 fi
 echo "  TLS hardening: client_min=$TLS_CLIENT_MIN, server_min=$TLS_SERVER_MIN (defaults OK)"
 
+# Verificar que la CA de SenaeBox esté instalada antes de arrancar.
+if [ ! -f "$SENAEBOX_CA_DIR/mitmproxy-ca.pem" ]; then
+    echo "ERROR: CA de SenaeBox no encontrada en $SENAEBOX_CA_DIR/"
+    echo "       Ejecuta: bash scripts/setup_first_run.sh (instala la CA desde assets/)"
+    exit 1
+fi
+
 mitmdump \
     --listen-host "$MITM_HOST" \
     --listen-port "$MITM_PORT" \
     --set stream_large_bodies=100k \
+    --set confdir="$SENAEBOX_CA_DIR" \
     "${ADDON_ARGS[@]}" \
     "${FLOW_ARGS[@]}" \
     &
+# confdir: directorio donde mitmproxy busca mitmproxy-ca.pem (key+cert) para
+# firmar certs leaf. Apunta a la CA de SenaeBox (distribuida en assets/),
+# NO a la CA personal de ~/.mitmproxy/. Cada instalación usa la misma CA →
+# el cert8.db pre-generado en assets/ ya confía en ella sin necesidad de
+# Podman ni certutil en runtime.
 MITM_PID=$!
 
 # Esperar a que mitmproxy esté escuchando en el puerto.
@@ -185,8 +204,8 @@ echo "Proxy activo."
 echo "  Tráfico HTTPS auditado por mitmproxy en $MITM_HOST:$MITM_PORT"
 echo "  Socket sandbox: $PROXY_SOCK"
 echo ""
-echo "Primera vez: instala el certificado CA en Firefox:"
-echo "  bash scripts/install_proxy_cert.sh"
+echo "Primera vez: corre setup_first_run.sh para generar CA + poblar cert8.db:"
+echo "  bash scripts/setup_first_run.sh"
 echo ""
 
 if $BG_MODE; then

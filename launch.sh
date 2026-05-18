@@ -22,8 +22,6 @@ LOCK_FILE="/tmp/senaebox.lock"
 PROXY_SOCK="/tmp/senaebox-proxy.sock"
 PROXY_PID_FILE="/tmp/senaebox-proxy.pid"
 SETUP_MARKER="$STATE_DIR/.setup_complete"
-CA_FP_MARKER="$STATE_DIR/.ca_fingerprint"
-MITM_CERT="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
 PROFILE_DIR="$STATE_DIR/wine/drive_c/users/$(whoami)/Documents/SENAE browser/Data/profile"
 
 mkdir -p "$LOG_DIR"
@@ -64,9 +62,11 @@ show_info() {
 MISSING_DEPS=()
 command -v zenity    &>/dev/null || MISSING_DEPS+=("zenity        →  sudo dnf install zenity")
 command -v bwrap     &>/dev/null || MISSING_DEPS+=("bubblewrap    →  sudo dnf install bubblewrap")
-command -v podman    &>/dev/null || MISSING_DEPS+=("podman        →  sudo dnf install podman")
 command -v mitmdump  &>/dev/null || MISSING_DEPS+=("mitmproxy     →  pip install mitmproxy")
 command -v socat     &>/dev/null || MISSING_DEPS+=("socat         →  sudo dnf install socat")
+# Nota: podman NO es requirement de runtime. Se usa solo durante setup_first_run.sh
+# para parchear cert8.db con la CA generada para este usuario. Si el usuario no lo
+# tiene instalado, setup lo instala vía pkexec, lo usa, y lo desinstala al terminar.
 
 if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
     MSG="El SENAE Browser no puede abrirse porque faltan programas necesarios:\n"
@@ -253,48 +253,10 @@ fi
 
 mkdir -p "$HOME/SenaeBox/Descargas" "$HOME/SenaeBox/Documentos"
 
-# =============================================================================
-# Verificar e instalar certificado CA del proxy en Firefox
-#
-# Compara el SHA-256 del cert actual con el último instalado (marker file).
-# Sin match → instalar vía Podman (solo cuando es necesario, no en cada sesión).
-# =============================================================================
-
-_install_ca_if_needed() {
-    [ -f "$MITM_CERT" ]              || { echo "CA cert no existe aún."; return 0; }
-    [ -f "$PROFILE_DIR/cert8.db" ]   || { echo "cert8.db no existe aún (primer arranque de Firefox)."; return 0; }
-
-    CURRENT_FP=$(openssl x509 -in "$MITM_CERT" -noout -fingerprint -sha256 2>/dev/null || echo "")
-    STORED_FP=$(cat "$CA_FP_MARKER" 2>/dev/null || echo "")
-
-    if [ "$CURRENT_FP" = "$STORED_FP" ] && [ -n "$CURRENT_FP" ]; then
-        echo "Certificado CA vigente — sin cambios."
-        return 0
-    fi
-
-    echo "Instalando certificado CA en Firefox..."
-
-    # Indicador visual mientras Podman trabaja (se cierra solo en 120 s máximo)
-    zenity --progress --pulsate --no-cancel \
-           --title="SENAE Browser" \
-           --text="Instalando certificado de seguridad en Firefox...\n\nLa primera vez descarga una imagen (~75 MB). Espera un momento." \
-           --width=460 2>/dev/null &
-    ZENITY_WAIT_PID=$!
-
-    bash "$REPO_DIR/scripts/install_proxy_cert.sh" >> "$LAUNCHER_LOG" 2>&1
-    CERT_EXIT=$?
-
-    kill "$ZENITY_WAIT_PID" 2>/dev/null || true
-
-    if [ "$CERT_EXIT" -eq 0 ]; then
-        echo "$CURRENT_FP" > "$CA_FP_MARKER"
-        echo "Certificado CA instalado."
-    else
-        show_error "No se pudo instalar el certificado de seguridad.\n\nEl browser se abrirá, pero Ecuapass puede mostrar un error de certificado.\n\nDetalles en: $LAUNCHER_LOG"
-    fi
-}
-
-_install_ca_if_needed
+# cert8.db (NSS DB con la CA confiada) se genera UNA VEZ en setup_first_run.sh.
+# Los launches posteriores no tocan certificados: el cert8.db ya existe en el
+# profile, mitmproxy usa la CA del usuario en ~/.local/share/senaebox/ca/, y
+# Firefox confía en la CA porque está en cert8.db. Sin dependencia de podman.
 
 # =============================================================================
 # Arrancar proxy TLS en segundo plano
@@ -474,17 +436,11 @@ bash "$REPO_DIR/sandbox/launch_sandbox.sh" >> "$LAUNCHER_LOG" 2>&1
 BROWSER_EXIT=$?
 echo "Browser cerrado (código: $BROWSER_EXIT)."
 
-# =============================================================================
-# Post-cierre: instalar CA si cert8.db acaba de aparecer (primer arranque real)
-# =============================================================================
-
-if [ -f "$PROFILE_DIR/cert8.db" ] && [ ! -f "$CA_FP_MARKER" ]; then
-    echo "cert8.db nuevo detectado — instalando certificado CA..."
-    _install_ca_if_needed
-    if [ -f "$CA_FP_MARKER" ]; then
-        show_info "Configuración completa.\n\nVuelve a abrir el SENAE Browser.\nEcuapass cargará sin errores de certificado."
-    fi
-fi
+# Post-cierre: el cert8.db ya fue generado durante setup_first_run.sh con
+# la CA del usuario. No hay nada que sincronizar aquí en runtime — esto
+# eliminaría la dependencia de podman en arranques posteriores. Si en algún
+# escenario raro Firefox borra/regenera su cert8.db, el usuario verá errores
+# de cert y deberá re-correr setup (borrar $SETUP_MARKER y re-lanzar).
 
 # El trap EXIT detiene el proxy y elimina el lock.
 echo "Sesión terminada."
