@@ -141,3 +141,49 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# =============================================================================
+# SenaeBox — privacidad y artefactos de build
+# =============================================================================
+
+# Datos personales nunca commiteables (estado del usuario / del builder)
+**/cookies.sqlite
+**/cert8.db
+**/cert9.db
+**/key3.db
+**/key4.db
+**/*.bak
+**/*.bak.*
+**/startupCache*
+**/*.mitm
+**/__pycache__/
+**/*.pyc
+
+# Claves privadas — NUNCA al repo
+**/*key*.pem
+**/*.p12
+**/*.pkcs12
+**/id_rsa*
+assets/senaebox-ca/
+
+# Markers de setup (estado por instalación)
+**/.setup_complete
+**/.ca_fingerprint
+**/.cert8*
+**/.zoom_configured*
+**/.podman_installed*
+
+# Artefactos del build de AppImage
+packaging/AppDir/
+packaging/appimage-build/
+packaging/out/
+*.AppImage
+*.AppImage.zsync
+AppDir/
+
+# Claude Code local (settings por desarrollador)
+.claude/
+
+# Logs y CSVs de diagnóstico
+**/logs/
+**/*.csv

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=SenaeBox
+GenericName=Navegador Ecuapass
+GenericName[es]=Navegador Ecuapass
+Comment=Accede al portal Ecuapass de la Aduana del Ecuador en Linux
+Comment[es]=Accede al portal Ecuapass de la Aduana del Ecuador en Linux
+Exec=AppRun %u
+Icon=senaebox
+Categories=Network;WebBrowser;
+Terminal=false
+StartupNotify=true
+Keywords=ecuapass;aduana;senae;ecuador;

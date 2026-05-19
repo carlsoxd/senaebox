@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- SenaeBox icon — placeholder simple basado en los colores de Ecuapass.
+       Fondo amarillo de la bandera del Ecuador, "S" estilizada en azul oscuro. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFD800"/>
+      <stop offset="1" stop-color="#E8B800"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="40" fill="url(#bg)"/>
+  <text x="128" y="180" font-family="DejaVu Sans, sans-serif" font-size="180"
+        font-weight="bold" fill="#003893" text-anchor="middle">S</text>
+  <rect x="20" y="218" width="216" height="18" rx="6" fill="#CE1126"/>
+</svg>
