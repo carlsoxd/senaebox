@@ -163,13 +163,47 @@ _ensure_downloads_symlink() {
 
     # Caso 2: es directorio (vacío o con archivos perdidos de sesiones anteriores)
     if [ -d "$prefix_downloads" ] && [ ! -L "$prefix_downloads" ]; then
-        # Rescatar archivos perdidos antes de reemplazar
+        # Rescatar archivos perdidos antes de reemplazar.
+        # Si hay colisión de nombre con un archivo existente en shared_downloads,
+        # renombramos el del prefix con sufijo timestamped — NUNCA borramos
+        # silenciosamente (un `mv -n` + `rm -rf` haría exactamente eso si dos
+        # archivos tienen el mismo nombre).
         local rescued=0
+        local conflicts=0
+        local stamp; stamp=$(date +%Y%m%d_%H%M%S)
         while IFS= read -r -d '' f; do
-            mv -n "$f" "$shared_downloads/" 2>/dev/null && rescued=$((rescued + 1))
+            local name; name="$(basename "$f")"
+            local target="$shared_downloads/$name"
+            if [ -e "$target" ]; then
+                # Colisión: añadir sufijo con timestamp + ".from_prefix"
+                local alt="$shared_downloads/${name}.from_prefix_${stamp}"
+                local n=1
+                while [ -e "$alt" ]; do
+                    alt="$shared_downloads/${name}.from_prefix_${stamp}.${n}"
+                    n=$((n + 1))
+                done
+                if mv "$f" "$alt" 2>/dev/null; then
+                    conflicts=$((conflicts + 1))
+                    rescued=$((rescued + 1))
+                fi
+            elif mv "$f" "$target" 2>/dev/null; then
+                rescued=$((rescued + 1))
+            fi
         done < <(find "$prefix_downloads" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
-        [ "$rescued" -gt 0 ] && echo "Rescatados $rescued archivos de descargas previas al wineprefix → ~/SenaeBox/Descargas/"
-        rmdir "$prefix_downloads" 2>/dev/null || rm -rf "$prefix_downloads"
+
+        if [ "$rescued" -gt 0 ]; then
+            echo "Rescatados $rescued archivos de descargas previas al wineprefix → ~/SenaeBox/Descargas/"
+            [ "$conflicts" -gt 0 ] && echo "  $conflicts tenían colisión de nombre — renombrados con sufijo .from_prefix_${stamp}"
+        fi
+
+        # Solo borramos el directorio si quedó vacío tras los moves. Si algún
+        # mv falló por permisos, dejar el directorio intacto en vez de rm -rf
+        # destructivo. El usuario verá un error en el próximo arranque.
+        if ! rmdir "$prefix_downloads" 2>/dev/null; then
+            echo "ADVERTENCIA: $prefix_downloads no se pudo vaciar — conservado intacto." >&2
+            echo "             Revisa su contenido manualmente y bórralo cuando estés listo." >&2
+            return 1
+        fi
     fi
 
     # Caso 3: es symlink incorrecto → eliminar
@@ -197,10 +231,11 @@ _ensure_downloads_symlink() {
 _zone_identifier_cleanup_loop() {
     local downloads="$HOME/SenaeBox/Descargas"
     while [ -f "$LOCK_FILE" ]; do
-        # Archivos visibles (caso Wine sin xattr o filesystem sin soporte)
-        find "$downloads" -maxdepth 2 \
-            \( -name '*:Zone.Identifier' -o -name '*.Identifier' -o -name 'Zone.Identifier' \) \
-            -delete 2>/dev/null
+        # SOLO el patrón exacto que Wine usa para Zone.Identifier ADS:
+        # `archivo.ext:Zone.Identifier` (con dos puntos literales en el nombre).
+        # Patrones más amplios como `*.Identifier` borrarían archivos legítimos
+        # del usuario (ej. `app.Identifier` de otras aplicaciones).
+        find "$downloads" -maxdepth 2 -name '*:Zone.Identifier' -delete 2>/dev/null
         # xattrs (caso Wine con xattr support en ext4)
         if command -v setfattr &>/dev/null; then
             find "$downloads" -maxdepth 2 -type f -print0 2>/dev/null | \
@@ -435,6 +470,13 @@ echo "Abriendo SENAE Browser..."
 bash "$REPO_DIR/sandbox/launch_sandbox.sh" >> "$LAUNCHER_LOG" 2>&1
 BROWSER_EXIT=$?
 echo "Browser cerrado (código: $BROWSER_EXIT)."
+
+# Si el sandbox salió con error, notificar al usuario con dialog (no solo log).
+# Código 0 = cierre normal. Cualquier otro = problema que el usuario debe ver.
+# Excluimos 130 (SIGINT, Ctrl+C) que es cierre voluntario.
+if [ "$BROWSER_EXIT" -ne 0 ] && [ "$BROWSER_EXIT" -ne 130 ]; then
+    show_error "El SENAE Browser terminó con un error inesperado (código $BROWSER_EXIT).\n\nDetalles técnicos en:\n$LAUNCHER_LOG\n\nSi el problema persiste, comparte ese archivo de log con soporte."
+fi
 
 # Post-cierre: el cert8.db ya fue generado durante setup_first_run.sh con
 # la CA del usuario. No hay nada que sincronizar aquí en runtime — esto

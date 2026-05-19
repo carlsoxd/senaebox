@@ -167,6 +167,47 @@ else
 fi
 
 # =============================================================================
+# 6b. Copiar templates de configuración de Firefox al perfil
+#
+# El repo distribuye templates en assets/profile-templates/ con TODAS las
+# prefs críticas (compositor, DPI neutralizado, TLS 1.2, anti-pantalla-negra,
+# zoom Ecuapass habilitado, fullscreen deshabilitado, watchdog plugins, etc.)
+# y el userChrome.css que oculta los controles fullscreen que crashean Wine.
+#
+# Solo se copian si el archivo destino NO existe — preserva customizaciones
+# del usuario en re-instalaciones. Para forzar reemplazo, borrar el archivo
+# local antes del setup.
+# =============================================================================
+
+step 65 "Instalando templates de configuración Firefox..."
+
+PROFILE_DIR_FF="$WINEPREFIX_DIR/drive_c/users/$WINE_USER/Documents/SENAE browser/Data/profile"
+TEMPLATE_DIR="$REPO_DIR/assets/profile-templates"
+
+# El perfil debe existir antes — Firefox lo crea en su primer arranque, o el
+# launcher del SENAE Browser PortableApps. Si no existe aún, crearlo vacío
+# (Firefox lo poblará con prefs.js etc. al arrancar).
+mkdir -p "$PROFILE_DIR_FF/chrome"
+
+# Copia idempotente: solo si no existe en el perfil del usuario
+_install_template() {
+    local src="$1" dst="$2"
+    if [ -f "$dst" ]; then
+        echo "[setup]   $(basename "$dst") ya existe — preservado" >&2
+        return 0
+    fi
+    if [ ! -f "$src" ]; then
+        echo "[setup]   AVISO: template ausente en repo: $src" >&2
+        return 1
+    fi
+    cp "$src" "$dst"
+    echo "[setup]   Instalado: $(basename "$dst")" >&2
+}
+
+_install_template "$TEMPLATE_DIR/user.js"              "$PROFILE_DIR_FF/user.js"
+_install_template "$TEMPLATE_DIR/chrome/userChrome.css" "$PROFILE_DIR_FF/chrome/userChrome.css"
+
+# =============================================================================
 # 7. Generar CA única para este usuario (NO viene del repo)
 #
 # A diferencia de la versión anterior que shipaba una CA estática en assets/
@@ -259,8 +300,18 @@ else
         PODMAN_PRE_EXISTING=false
         echo "[setup] Podman no instalado. Solicitando install vía pkexec..." >&2
         if command -v pkexec &>/dev/null; then
+            # Aviso visible al usuario antes del prompt de pkexec — la barra de
+            # zenity se queda estática durante el pkexec y dnf install (~30s).
+            # Sin este aviso, el usuario puede no saber por qué aparece el dialog.
+            if command -v zenity &>/dev/null; then
+                zenity --info --title="SenaeBox — Setup" --width=460 --no-markup \
+                    --text="A continuación se abrirá un diálogo del sistema pidiendo tu contraseña.\n\nSenaeBox necesita instalar 'podman' temporalmente para configurar el certificado de seguridad de Firefox. Se desinstalará automáticamente al terminar el setup." \
+                    2>/dev/null &
+                ZENITY_INFO_PID=$!
+            fi
             pkexec dnf install -y podman \
                 || fail "No se pudo instalar podman vía pkexec. Cancela el setup y ejecuta manualmente: sudo dnf install podman"
+            [ -n "${ZENITY_INFO_PID:-}" ] && kill "$ZENITY_INFO_PID" 2>/dev/null || true
         else
             fail "Podman no instalado y pkexec no disponible.\nInstala manualmente: sudo dnf install podman\nLuego re-corre el setup."
         fi
@@ -296,13 +347,24 @@ else
     # Si fuimos NOSOTROS quienes instalamos podman, desinstalarlo ahora
     if [ "$PODMAN_PRE_EXISTING" = false ] && [ -f "$STATE_DIR/.podman_installed_by_senaebox" ]; then
         echo "[setup] Desinstalando podman (lo instalamos solo para este setup)..." >&2
-        if pkexec dnf remove -y podman; then
+        # Aviso al usuario antes del segundo pkexec (mismo motivo que arriba).
+        if command -v zenity &>/dev/null; then
+            zenity --info --title="SenaeBox — Setup" --width=460 --no-markup \
+                --text="Otra petición de contraseña: SenaeBox va a desinstalar el 'podman' que instaló temporalmente para configurar el certificado.\n\nDespués de este paso, SenaeBox no volverá a pedir contraseñas root." \
+                2>/dev/null &
+            ZENITY_INFO_PID=$!
+        fi
+        # --noautoremove: SOLO remueve podman, no toca paquetes que dnf considera
+        # huérfanos. Si esos paquetes los necesita otra app del usuario, mantenerlos.
+        # El usuario puede correr 'sudo dnf autoremove' manualmente si quiere limpiar.
+        if pkexec dnf remove -y --noautoremove podman; then
             rm -f "$STATE_DIR/.podman_installed_by_senaebox"
             echo "[setup] Podman desinstalado. Arranques posteriores no lo necesitan." >&2
         else
             echo "[setup] ADVERTENCIA: no se pudo desinstalar podman automáticamente." >&2
-            echo "[setup] Para removerlo manualmente: sudo dnf remove podman" >&2
+            echo "[setup] Para removerlo manualmente: sudo dnf remove --noautoremove podman" >&2
         fi
+        [ -n "${ZENITY_INFO_PID:-}" ] && kill "$ZENITY_INFO_PID" 2>/dev/null || true
     fi
 fi
 
@@ -316,20 +378,33 @@ mkdir -p "$HOME/SenaeBox/Descargas" "$HOME/SenaeBox/Documentos"
 echo "[setup] ~/SenaeBox/Descargas y ~/SenaeBox/Documentos: OK" >&2
 
 # Configurar directorio de descarga por defecto en Firefox (vía user.js)
+#
+# Usamos C:\users\<usuario>\Downloads (default FOLDERID_Downloads de Wine),
+# que launch.sh convierte en symlink hacia ~/SenaeBox/Descargas mediante
+# _ensure_downloads_symlink. Wine resuelve el symlink dentro del sandbox
+# gracias al bind mount → las descargas aparecen en la carpeta compartida.
+#
+# Histórico: este bloque usaba "Z:\\home\\$WINE_USER\\SenaeBox\\Descargas"
+# (drive Z = / por convención Wine), pero create_wineprefix.sh borra el
+# symlink z: → / como parte del aislamiento → Z:\ apunta a nada → Firefox
+# caía al default C:\users\.. que está dentro del wineprefix, no en
+# ~/SenaeBox/Descargas. Por eso ahora usamos directamente el default y
+# resolvemos vía symlink.
 USERJS="$WINEPREFIX_DIR/drive_c/users/$WINE_USER/Documents/SENAE browser/Data/profile/user.js"
-DOWNLOADS_WIN_PATH="Z:\\\\home\\\\$WINE_USER\\\\SenaeBox\\\\Descargas"
+DOWNLOADS_WIN_PATH="C:\\\\users\\\\$WINE_USER\\\\Downloads"
 
 if [ -f "$USERJS" ] && ! grep -q "browser.download.dir" "$USERJS"; then
     cat >> "$USERJS" << USERJS_EOF
 
-// --- Directorio de descarga (Fase 6) ---
-// La carpeta ~/SenaeBox/Descargas está montada en el sandbox con --bind.
-// Firefox la ve como Z:\home\USER\SenaeBox\Descargas (drive Z = raíz del host).
+// --- Directorio de descarga (añadido por setup_first_run.sh) ---
+// Default de Wine FOLDERID_Downloads. launch.sh convierte
+// drive_c/users/$WINE_USER/Downloads en symlink hacia ~/SenaeBox/Descargas,
+// que está bind-montado en el sandbox.
 user_pref("browser.download.folderList", 2);
 user_pref("browser.download.dir", "$DOWNLOADS_WIN_PATH");
 user_pref("browser.download.useDownloadDir", true);
 USERJS_EOF
-    echo "[setup] Directorio de descarga configurado en user.js." >&2
+    echo "[setup] Directorio de descarga configurado: $DOWNLOADS_WIN_PATH" >&2
 fi
 
 # =============================================================================

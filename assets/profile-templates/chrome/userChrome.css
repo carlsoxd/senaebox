@@ -1,0 +1,74 @@
+/*
+ * SenaeBox — userChrome.css (TEMPLATE)
+ *
+ * Copiado a <profile>/chrome/userChrome.css por setup_first_run.sh si el
+ * usuario no tiene ya el archivo. Firefox 41 lo carga automáticamente al
+ * arrancar (sin necesidad de toolkit.legacyUserProfileCustomizations.stylesheets
+ * — esa pref se introdujo en Firefox 69).
+ *
+ * IMPORTANTE: si editas este archivo en el repo y el usuario ya tiene la
+ * versión local, los cambios NO se aplican. Para forzar reemplazo, eliminar
+ * <profile>/chrome/userChrome.css antes de relanzar.
+ */
+
+@namespace url("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul");
+
+/*
+ * --- Bloqueo del fullscreen nativo del browser ---
+ *
+ * Causa del crash (verificado empíricamente):
+ *   El botón "Pantalla completa" del menú llama a BrowserFullScreen() (XUL JS).
+ *   Firefox manda _NET_WM_STATE_FULLSCREEN → Mutter responde con WM_SIZE →
+ *   Wine intenta empaquetar WM_NCPAINT y WM_ERASEBKGND para IPC entre hilos
+ *   con `pack_message`, que no soporta esos mensajes → corrupción IPC →
+ *   Wine crashea silenciosamente.
+ *
+ *   La pref `full-screen-api.enabled` desactiva solo la HTML5 Fullscreen API
+ *   (lo que usan páginas web con element.requestFullscreen()). BrowserFullScreen()
+ *   del chrome no la consulta, por eso esa pref por sí sola no resolvió el crash.
+ *
+ * Solución: ocultar todo control de UI que dispare BrowserFullScreen() y
+ * desactivar la tecla F11 vía -moz-binding (técnica que funciona en Firefox 41
+ * porque el keyset todavía es XBL).
+ *
+ * Nota: el fullscreen de Flash (Stage.displayState="fullScreen") es independiente
+ * — plugin-container.exe crea su propia ventana X11 — y NO se ve afectado.
+ */
+
+/* Menu items en la barra de menús (Ver → Pantalla completa) y el menú de
+   aplicación (hamburguesa). Cubrimos múltiples IDs porque Firefox 41 usa
+   distintos en el menú clásico, el panel hamburguesa y barras personalizadas. */
+menuitem[command="View:FullScreen"],
+menuitem#fullScreenItem,
+menuitem#appmenu_fullScreen,
+toolbarbutton[command="View:FullScreen"],
+toolbarbutton#fullscreen-button,
+toolbarbutton#appmenu-fullscreen-button,
+toolbaritem#fullscreen-button,
+key[command="View:FullScreen"] {
+    display: none !important;
+}
+
+/* Desactivar la tecla F11 quitándole su binding XBL. En Firefox 41 esto
+   efectivamente la convierte en no-op: el keyset registra el key pero
+   sin binding la presión no dispara nada. */
+key#key_fullScreen {
+    -moz-binding: none !important;
+}
+
+/* Desactivar el command que ambos (menu y tecla) referencian, como red de
+   seguridad por si algún path del chrome resuelve por command-id en vez de
+   por el menuitem específico. */
+command#cmd_fullScreen,
+command[id="View:FullScreen"] {
+    -moz-binding: none !important;
+}
+
+/*
+ * NOTA: una versión previa intentaba bloquear el colapso de ventana con
+ * #main-window { min-width: 800px; min-height: 600px; }. Verificado
+ * empíricamente que NO funciona: el CSS solo afecta el layout XUL interno,
+ * pero la ventana del WM ya colapsó por Wine devolviendo MINMAXINFO defectuoso
+ * a Mutter. El fix real está en launch.sh (_fix_xulstore_window_size) que
+ * parcha xulstore.json en cada arranque antes de que Firefox lo lea.
+ */

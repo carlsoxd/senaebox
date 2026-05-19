@@ -34,7 +34,8 @@ LOG_DIR="$STATE_DIR/logs"
 # CA propia de SenaeBox (no la personal de mitmproxy en ~/.mitmproxy/).
 # El directorio contiene mitmproxy-ca.pem (key + cert combinados) que mitmdump
 # usa para firmar dinámicamente certificados leaf para cada dominio HTTPS.
-# Copiada desde assets/ por setup_first_run.sh con permisos 700/600.
+# Generada por setup_first_run.sh con openssl (única por instalación, nunca
+# distribuida en el repo). Permisos: 700 (dir), 600 (key), 644 (cert público).
 SENAEBOX_CA_DIR="$STATE_DIR/ca"
 
 [[ "${1:-}" == "--bg" ]] && BG_MODE=true
@@ -139,7 +140,7 @@ echo "  TLS hardening: client_min=$TLS_CLIENT_MIN, server_min=$TLS_SERVER_MIN (d
 # Verificar que la CA de SenaeBox esté instalada antes de arrancar.
 if [ ! -f "$SENAEBOX_CA_DIR/mitmproxy-ca.pem" ]; then
     echo "ERROR: CA de SenaeBox no encontrada en $SENAEBOX_CA_DIR/"
-    echo "       Ejecuta: bash scripts/setup_first_run.sh (instala la CA desde assets/)"
+    echo "       Ejecuta: bash scripts/setup_first_run.sh (genera la CA con openssl)"
     exit 1
 fi
 
@@ -179,7 +180,7 @@ else
 fi
 # confdir: directorio donde mitmproxy busca mitmproxy-ca.pem (key+cert) para
 # firmar certs leaf. Apunta a la CA propia del usuario en ~/.local/share/
-# senaebox/ca/, NO a la CA personal de ~/.mitmproxy/.
+# senaebox/ca/ (generada en setup), NO a la CA personal de ~/.mitmproxy/.
 MITM_PID=$!
 
 # Esperar a que mitmproxy esté escuchando en el puerto.
