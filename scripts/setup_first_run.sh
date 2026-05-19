@@ -207,6 +207,15 @@ _install_template() {
 _install_template "$TEMPLATE_DIR/user.js"              "$PROFILE_DIR_FF/user.js"
 _install_template "$TEMPLATE_DIR/chrome/userChrome.css" "$PROFILE_DIR_FF/chrome/userChrome.css"
 
+# xulstore.json: forzar sizemode=normal desde el primer arranque.
+# Sin esto, el SENAE Browser PortableApps copia su DefaultData/profile/xulstore.json
+# (que tiene sizemode=maximized) y reproduce inmediatamente el bug de la ventana
+# que colapsa al pulsar Restaurar. El template tiene tamaño sano + sizemode=normal
+# para que Mutter aprenda el tamaño natural desde el primer arranque.
+# _fix_xulstore_window_size en launch.sh corrige el archivo en arranques posteriores
+# si Firefox lo corrompe; este template lo deja sano desde el inicio.
+_install_template "$TEMPLATE_DIR/xulstore.json"        "$PROFILE_DIR_FF/xulstore.json"
+
 # =============================================================================
 # 7. Generar CA única para este usuario (NO viene del repo)
 #

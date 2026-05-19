@@ -307,16 +307,50 @@ if ! bash "$REPO_DIR/proxy/run_proxy.sh" --bg >> "$LAUNCHER_LOG" 2>&1; then
     exit 1
 fi
 
-# Esperar socket del proxy (máx 8 s)
+# --- Verificación de readiness del proxy ---
+#
+# Cadena de proxy: Firefox → socat 127.0.0.1:8080 (en sandbox) →
+# /tmp/senaebox-proxy.sock (UNIX bind a host) → socat host → mitmproxy 127.0.0.1:8081.
+#
+# Tres verificaciones secuenciales antes de arrancar el sandbox:
+#   1. PROXY_SOCK existe (socat del host creó el socket UNIX)
+#   2. mitmproxy responde en 127.0.0.1:8081 (TCP probe via bash /dev/tcp)
+#   3. Grace period (mitmproxy carga addons + inicializa TLS context tras LISTEN)
+#
+# Sin la verificación #2+#3, en primer arranque post-setup había race condition:
+# socat tenía su socket listo, pero mitmproxy estaba todavía cargando el addon
+# BlazeSessionAddon + inicializando el SSL context con la CA recién generada.
+# La primera request de Firefox encontraba el puerto LISTEN pero sin handler
+# real → connection refused o timeout → "Verifique la conexión de red".
+
+# 1. Socket UNIX listo (máx 8 s)
 for i in $(seq 1 16); do
     sleep 0.5
     [ -S "$PROXY_SOCK" ] && break
     if [ "$i" -eq 16 ]; then
-        show_error "El proxy tardó demasiado en arrancar.\n\nDetalles en: $LAUNCHER_LOG"
+        show_error "El proxy tardó demasiado en crear el socket Unix.\n\nDetalles en: $LAUNCHER_LOG"
         exit 1
     fi
 done
-echo "Proxy listo."
+
+# 2. mitmproxy aceptando conexiones TCP (máx 5 s)
+# Usamos bash builtin /dev/tcp — sin curl/nc dependency.
+for i in $(seq 1 10); do
+    if timeout 1 bash -c "</dev/tcp/127.0.0.1/8081" 2>/dev/null; then
+        break
+    fi
+    sleep 0.5
+    if [ "$i" -eq 10 ]; then
+        show_error "El proxy aceptó el socket Unix pero mitmproxy no responde en TCP 127.0.0.1:8081.\n\nDetalles en: $LAUNCHER_LOG"
+        exit 1
+    fi
+done
+
+# 3. Grace period: mitmproxy carga addons + inicializa SSL context tras LISTEN.
+# 1.5 s es suficiente en sistemas modernos (HP EliteBook 11th gen i7).
+sleep 1.5
+
+echo "Proxy listo (socket UNIX + TCP + grace period)."
 
 # =============================================================================
 # Aplicar configuración de registro Wine (DPI, virtual desktop, X11 Driver)
@@ -389,74 +423,71 @@ _zone_identifier_cleanup_loop &
 _ZONE_CLEANUP_PID=$!
 
 # =============================================================================
-# Auto-parchar xulstore.json: tamaño de ventana corrupto por ciclo Wine/Mutter
+# Reset INCONDICIONAL de xulstore.json en cada arranque
 #
-# Bug irreparable a nivel sandbox:
-#   1. Usuario click "Restaurar" del WM sobre ventana maximizada
-#   2. Mutter manda ConfigureRequest con "tamaño anterior" — pero la ventana
-#      nació maximized, Mutter no tiene previous size guardado
-#   3. Wine devuelve WM_GETMINMAXINFO con defaults de Windows (~112×27)
-#   4. Mutter manda WM_SIZE con ~80×25 (peor por margen de decoración)
-#   5. Firefox acepta y guarda ese tamaño en xulstore.json
-#   6. Siguiente arranque: ventana abre tiny porque xulstore tiene 80×25
+# Bug irreparable a nivel sandbox (Wine WM_GETMINMAXINFO defectuoso):
+#   Cuando el usuario presiona "Restaurar" del WM sobre una ventana maximizada,
+#   Mutter no tiene previous size guardado y termina mandando WM_SIZE con
+#   ~80×25 (defaults SM_CXMINTRACK/SM_CYMINTRACK de Wine). Firefox acepta y
+#   guarda ese tamaño en xulstore.json para la próxima sesión.
 #
-# Mitigaciones intentadas que NO funcionaron:
+# Historia de intentos parciales:
 #   - browser.window.width/height en user.js → no overridea xulstore
-#   - userChrome.css min-width: 800px → solo afecta layout XUL interno, no la
-#     ventana del WM que ya colapsó
-#   - Pre-parchar xulstore una sola vez → Firefox lo re-corrompe en la siguiente
-#     sesión donde el usuario interactúa con el botón restaurar
+#   - userChrome.css min-width: 800px → CSS no detiene el colapso del WM
+#   - Pre-parchar xulstore una vez → Firefox lo re-corrompe en sesión siguiente
+#   - Patch condicional (si width<800) → si usuario cierra maximizado con buen
+#     tamaño, la condición no dispara pero al des-maximizar el bug aún reaparece
 #
-# Esta función: parchar xulstore en CADA launch antes de que Firefox arranque,
-# si main-window tiene tamaño irrazonable. Forzar sizemode=normal para que
-# Mutter aprenda el tamaño natural primero (si el usuario maximiza después,
-# Mutter recordará 1280×720 como previous → restaurar funciona correctamente).
+# Política final: cada arranque resetea main-window a 1280×720 sizemode=normal
+# SIEMPRE, sin importar qué guardó Firefox. Concepto: el tamaño de ventana NO
+# se persiste entre sesiones de SenaeBox. El usuario puede maximizar durante
+# la sesión (Mutter aprende 1280×720 como previous → restaurar funciona dentro
+# de esa sesión), pero al cerrar y reabrir siempre vuelve a 1280×720 normal.
+#
+# Otras entradas de xulstore.json se preservan (bookmarkProperties, sanitize,
+# about:config column order, etc.) — solo main-window se resetea.
 # =============================================================================
 
 _fix_xulstore_window_size() {
     local xulstore="$PROFILE_DIR/xulstore.json"
-    [ -f "$xulstore" ] || return 0
+    mkdir -p "$(dirname "$xulstore")"
 
     python3 - "$xulstore" << 'PYEOF'
 import json, sys
 path = sys.argv[1]
+
+# Cargar el archivo existente para preservar entradas que no son main-window
+# (bookmark dialog positions, about:config column order, sanitize dialog, etc.).
+# Si no existe o está corrupto, partir de dict vacío.
 try:
     with open(path) as f:
         data = json.load(f)
-except Exception as e:
-    print(f"xulstore no parseable: {e}", file=sys.stderr)
-    sys.exit(0)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
 
 key = "chrome://browser/content/browser.xul"
-mw = data.get(key, {}).get("main-window")
-if not mw:
-    sys.exit(0)
+data.setdefault(key, {})
 
-try:
-    width  = int(float(mw.get("width",  "1280")))
-    height = int(float(mw.get("height", "720")))
-except (ValueError, TypeError):
-    width, height = 0, 0
+# Capturar el estado anterior solo para el log (diagnóstico)
+prev = data[key].get("main-window", {})
+prev_desc = f"{prev.get('width', '?')}×{prev.get('height', '?')} {prev.get('sizemode', '?')}"
 
-# Sano = al menos 800×600. Cualquier cosa menor es resultado del bug
-# Wine/Mutter de WM_GETMINMAXINFO.
-if width >= 800 and height >= 600:
-    sys.exit(0)
+# SOBREESCRITURA INCONDICIONAL — sin checks de tamaño, sin preservación del
+# tamaño anterior. El usuario controla el tamaño DURANTE la sesión, no entre
+# sesiones. Esta es la única política que evita el bug del WM_GETMINMAXINFO
+# de Wine porque no depende de que Firefox/Mutter persistan correctamente.
+data[key]["main-window"] = {
+    "width":    "1280",
+    "height":   "720",
+    "screenX":  "320",
+    "screenY":  "180",
+    "sizemode": "normal",
+}
 
-mw["width"]  = "1280"
-mw["height"] = "720"
-mw["screenX"] = "320"
-mw["screenY"] = "180"
-# Forzar sizemode=normal: si arranca maximized, Mutter nunca aprende el
-# tamaño natural y el bug se reproduce. Normal → usuario maximiza manualmente
-# si quiere, Mutter recuerda 1280×720 para restaurar correctamente.
-mw["sizemode"] = "normal"
-
-data[key]["main-window"] = mw
 with open(path, "w") as f:
     json.dump(data, f, separators=(",", ":"))
 
-print(f"xulstore reparado: tamaño anterior {width}×{height} → 1280×720 (sizemode=normal)", file=sys.stderr)
+print(f"xulstore main-window: {prev_desc} → 1280×720 normal (reset incondicional)", file=sys.stderr)
 PYEOF
 }
 
