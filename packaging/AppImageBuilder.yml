@@ -77,6 +77,13 @@ script:
     cp -a "$WSRC" AppDir/opt/senaebox/wine-runner
     # Sanity: el runner no debe traer un wineprefix interno (sería del builder)
     [ ! -d "AppDir/opt/senaebox/wine-runner/drive_c" ] || { echo "ERROR: wine-runner trae drive_c (datos del builder)"; exit 1; }
+    # Optimización de tamaño: SENAE Browser corre Firefox 41 (Windows portable),
+    # no usa .NET ni Gecko/Mono internos de Wine. Wine los pull-a desde
+    # share/wine/{mono,gecko}/ cuando una app .NET o WebView2 lo invoca — no
+    # es nuestro caso. Ahorro ≈ 440 MB descomprimido (~150 MB comprimido).
+    # Si en el futuro se necesita, removerlos del exclude.
+    rm -rf AppDir/opt/senaebox/wine-runner/share/wine/mono
+    rm -rf AppDir/opt/senaebox/wine-runner/share/wine/gecko
 
   # --- SENAE Browser portable: solo App/, Other/, .ini, .exe (NUNCA Data/) ---
   - |
@@ -96,21 +103,89 @@ script:
     [ ! -d "$DEST/Data" ] || { echo "ERROR: Data/ escapó del exclude"; exit 1; }
 
   # --- mitmproxy + addons en venv Python aislado ---
+  #
+  # Versión pineada: 11.x.
+  # mitmproxy 12+ requiere Python 3.11+, pero Ubuntu 22.04 (el container base)
+  # trae Python 3.10.6. pip filtra correctamente y solo ofrece mitmproxy 11 que
+  # sí soporta Python 3.10. mitmproxy 11 mantiene los defaults que necesitamos:
+  #   - tls_version_client_min: TLS1_2 (default since mitmproxy 10)
+  #   - tls_version_server_min: TLS1_2 (default since mitmproxy 10)
+  #   - API estable del addon (flow.request/response, ctx.log) que usa addon_blazeds.py
+  #   - --set confdir, --set stream_large_bodies, --set flow_detail, --set termlog_verbosity
+  # Si en el futuro la base sube a ubuntu:24.04 (Python 3.12), considerar
+  # 'mitmproxy>=12' o no pinear el major.
   - |
     set -euo pipefail
     python3 -m venv AppDir/opt/senaebox/mitm-venv
-    AppDir/opt/senaebox/mitm-venv/bin/pip install --no-cache-dir 'mitmproxy>=12,<13'
+    AppDir/opt/senaebox/mitm-venv/bin/pip install --no-cache-dir 'mitmproxy>=11,<12'
     # Limpiar caches que pip dejó (no son datos personales pero son innecesarios)
     find AppDir/opt/senaebox/mitm-venv -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
     find AppDir/opt/senaebox/mitm-venv -name "*.pyc" -delete 2>/dev/null || true
 
-  # --- AppRun e icono al root del AppDir ---
-  - cp AppRun         AppDir/AppRun
-  - chmod 755         AppDir/AppRun
-  - cp senaebox.desktop AppDir/senaebox.desktop
-  - cp senaebox.svg   AppDir/senaebox.svg
-  - cp senaebox.svg   AppDir/usr/share/icons/hicolor/scalable/apps/senaebox.svg 2>/dev/null || \
-      { mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps && cp senaebox.svg AppDir/usr/share/icons/hicolor/scalable/apps/senaebox.svg; }
+    # ---- Wrapper bash para python3 del venv ---------------------------------
+    # Problema: apprun_2 patchea el ELF interpreter del python3 bundled
+    # (lib64/ld-linux-x86-64.so.2 relativo) y solo el AppRun ELF lo invoca
+    # correctamente via libapprun_hooks. fork+exec de python3 desde un
+    # subshell (e.g. run_proxy.sh ejecutando mitmdump) falla con "intérprete
+    # erróneo: No existe el fichero".
+    #
+    # Solución: reemplazar python3 del venv por un wrapper bash que invoca
+    # el python3 bundled via el LDSO explícitamente, con PYTHONPATH del venv
+    # y librarías del AppDir. Esto bypasea el ELF interpreter corrupto.
+    cat > AppDir/opt/senaebox/mitm-venv/bin/python3-host.sh <<'WRAPPER_EOF'
+    #!/bin/bash
+    # Resolver $APPDIR: el wrapper vive en $APPDIR/opt/senaebox/mitm-venv/bin/
+    WRAPPER_DIR="$(dirname "$(readlink -f "$0")")"
+    APPDIR="$(cd "$WRAPPER_DIR/../../../.." && pwd)"
+    LDSO="$APPDIR/runtime/default/lib64/ld-linux-x86-64.so.2"
+    LIBPATH="$APPDIR/usr/lib/x86_64-linux-gnu:$APPDIR/lib/x86_64-linux-gnu"
+    # Site-packages del venv + del Python bundled
+    export PYTHONPATH="$APPDIR/opt/senaebox/mitm-venv/lib/python3.10/site-packages:$APPDIR/usr/lib/python3.10:${PYTHONPATH:-}"
+    unset PYTHONHOME
+    exec "$LDSO" --library-path "$LIBPATH" "$APPDIR/usr/bin/python3.10" "$@"
+    WRAPPER_EOF
+    chmod +x AppDir/opt/senaebox/mitm-venv/bin/python3-host.sh
+
+    # Reemplazar el python3 (originalmente symlink al python bundled corrupto)
+    # por el wrapper bash
+    rm -f AppDir/opt/senaebox/mitm-venv/bin/python3
+    rm -f AppDir/opt/senaebox/mitm-venv/bin/python3.10
+    rm -f AppDir/opt/senaebox/mitm-venv/bin/python
+    ln -s python3-host.sh AppDir/opt/senaebox/mitm-venv/bin/python3
+    ln -s python3-host.sh AppDir/opt/senaebox/mitm-venv/bin/python3.10
+    ln -s python3-host.sh AppDir/opt/senaebox/mitm-venv/bin/python
+
+    # Reescribir shebangs de entry points para usar /usr/bin/env python3
+    # (resolverá al wrapper via PATH gracias a AppRun_wrapper.sh).
+    # Los shebangs originales son #!/build/AppDir/.../python3 (path del container).
+    for f in AppDir/opt/senaebox/mitm-venv/bin/mitmdump \
+             AppDir/opt/senaebox/mitm-venv/bin/mitmproxy \
+             AppDir/opt/senaebox/mitm-venv/bin/mitmweb \
+             AppDir/opt/senaebox/mitm-venv/bin/flask \
+             AppDir/opt/senaebox/mitm-venv/bin/pip \
+             AppDir/opt/senaebox/mitm-venv/bin/pip3; do
+        [ -f "$f" ] && sed -i '1c#!/usr/bin/env python3' "$f"
+    done
+
+  # --- AppRun wrapper (script bash con nuestra lógica custom) ---
+  # NO se copia a AppDir/AppRun directamente: apprun_2 (runtime de
+  # appimage-builder 1.x) GENERA su propio AppRun ELF en /AppRun y lo
+  # sobrescribe. El wrapper va en /opt/senaebox/ y se invoca vía
+  # exec/exec_args del app_info (bash → AppRun_wrapper.sh).
+  - cp AppRun_wrapper.sh AppDir/opt/senaebox/AppRun_wrapper.sh
+  - chmod 755             AppDir/opt/senaebox/AppRun_wrapper.sh
+  # NOTA: nombre del .desktop debe coincidir con app_info.id (reverse-DNS),
+  # y appimage-builder lo busca específicamente en usr/share/applications/
+  # (helper desktop_entry_generator.py). Si va a otra ruta, falla con
+  # "Unable to locate the application desktop entry". appimage-builder
+  # genera la copia a AppDir/ raíz por su cuenta tras encontrarlo aquí.
+  - mkdir -p AppDir/usr/share/applications
+  - cp ec.gob.aduana.senaebox.desktop AppDir/usr/share/applications/ec.gob.aduana.senaebox.desktop
+  - cp senaebox.svg                   AppDir/senaebox.svg
+  # El icono también debe ir al path estándar de iconos del sistema (XDG icon spec)
+  # para que appimage-builder lo detecte. mkdir -p es idempotente.
+  - mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
+  - cp senaebox.svg AppDir/usr/share/icons/hicolor/scalable/apps/senaebox.svg
 
   # --- Verificación final ANTES de empaquetar: privacy guards ---
   - |
@@ -126,11 +201,22 @@ script:
         echo "$SUSPICIOUS"
     fi
 
-    # Asegurar que NO hay logs, .bak, .csv, cookies, sqlite del builder
+    # Asegurar que NO hay logs, .bak, .csv, cookies, sqlite del builder.
+    #
+    # Excluimos rutas de third-party deps (no son datos personales del builder,
+    # son test fixtures shipped por las propias librerías):
+    #   - */mitm-venv/*    → Python deps de mitmproxy (tornado, h2, kaitaistruct...)
+    #                         tornado/test/csv_translations/fr_FR.csv etc.
+    #   - */usr/lib/*      → libs apt-bundled
+    #   - */usr/share/*    → docs, locales, etc. apt-bundled
     for pattern in '*.log' '*.bak*' '*.csv' 'cookies.sqlite' 'cert8.db' \
                    'startupCache*' '*.mitm' '.setup_complete' '.ca_fingerprint' \
                    '.cert8*' '.zoom_configured*' '.podman_installed*'; do
-        found=$(find AppDir -name "$pattern" 2>/dev/null | head -5)
+        found=$(find AppDir -name "$pattern" \
+            -not -path '*/mitm-venv/*' \
+            -not -path '*/usr/lib/*' \
+            -not -path '*/usr/share/*' \
+            2>/dev/null | head -5)
         if [ -n "$found" ]; then
             echo "ERROR: archivos personales encontrados con patrón '$pattern':"
             echo "$found"
@@ -138,10 +224,15 @@ script:
         fi
     done
 
-    # Asegurar que NO hay claves privadas
-    if find AppDir -type f \( -name "*key*.pem" -o -name "*.pkcs12" -o -name "*.p12" \) 2>/dev/null | grep -q .; then
-        echo "ERROR: claves privadas detectadas en AppDir"
-        find AppDir -type f \( -name "*key*.pem" -o -name "*.pkcs12" -o -name "*.p12" \)
+    # Asegurar que NO hay claves privadas — mismos excludes de paths third-party
+    KEYS=$(find AppDir -type f \( -name "*key*.pem" -o -name "*.pkcs12" -o -name "*.p12" \) \
+        -not -path '*/mitm-venv/*' \
+        -not -path '*/usr/lib/*' \
+        -not -path '*/usr/share/*' \
+        2>/dev/null | head -5)
+    if [ -n "$KEYS" ]; then
+        echo "ERROR: claves privadas detectadas en AppDir (fuera de third-party deps):"
+        echo "$KEYS"
         exit 1
     fi
 
@@ -159,18 +250,65 @@ AppDir:
     name: SenaeBox
     icon: senaebox
     version: !ENV ${SENAEBOX_VERSION}
-    exec: AppRun
-    exec_args: "$@"
+    # IMPORTANTE: exec DEBE ser un binario ELF bundled. apprun_2 valida esto
+    # con ElfFile() y aborta si no lo es. Por eso apuntamos a bash (sí ELF)
+    # con exec_args invocando nuestro wrapper script.
+    # Ojo: el path es bin/bash (Debian-style), NO usr/bin/bash.
+    exec: bin/bash
+    exec_args: "$APPDIR/opt/senaebox/AppRun_wrapper.sh $@"
+
+  # --- Runtime: preservar archivos del patcher de shebangs ---
+  # ExecutablesPatcher de apprun_2 reescribe TODOS los shebangs absolutos
+  # a relativos (#!/bin/bash → #! bin/bash) para portabilidad cuando los
+  # invoca via libapprun_hooks. Nuestros scripts NO se ejecutan a través
+  # de ese hook (apprun_2 los invoca como `bash AppRun_wrapper.sh`), así
+  # que el patch los corrompe sin beneficio. preserve mantiene los
+  # shebangs originales intactos.
+  runtime:
+    preserve:
+      # NOTA: Finder.get_preserve_files() usa pathlib.Path.glob() y cuando
+      # match es directorio, internamente recurre con **/*. Así que para
+      # directorios basta el path SIN glob — patterns con /** pueden fallar.
+      - opt/senaebox/AppRun_wrapper.sh
+      - opt/senaebox/launch.sh
+      - opt/senaebox/scripts
+      - opt/senaebox/sandbox
+      - opt/senaebox/proxy
+      # Wine-ge runner: NO patchear sus ELFs. apprun_2 reescribe el interpreter
+      # ELF (/lib/ld-linux.so.2 → lib/...) y rompe la invocación directa de
+      # wine/wineserver/etc cuando son fork+exec'd por launch.sh, winetricks,
+      # winepath, etc. (no van por el AppRun ELF). Wine tiene interpreter ELF
+      # absoluto que el HOST resuelve nativamente — asume glibc.i686 instalada
+      # en el host destino (documentado como pre-requisito).
+      - opt/senaebox/wine-runner
+      # SENAE Browser portable: contiene un Firefox 41 PortableApp Windows
+      # (firefox.exe, npswf32_25.dll, npjp2.dll). NO son ELF, NO los patchea
+      # apprun_2, pero por seguridad los preservamos para que no sufran cambios
+      # accidentales (algunos extractores de wine empaqueten ELFs auxiliares).
+      - opt/senaebox/senae-browser-portable
+      # mitm-venv: NO patchear shebangs (script section ya los reescribió a
+      # #!/usr/bin/env python3) ni el wrapper python3-host.sh (shebang
+      # #!/bin/bash). python3-host.sh invoca el python bundled vía ld-linux
+      # explícito (bypasea el ELF interpreter corrupto).
+      - opt/senaebox/mitm-venv
 
   # --- Paquetes Ubuntu 22.04 a bundlear ---
   apt:
     arch: amd64
+    # IMPORTANTE: el prefijo [arch=amd64,i386] le dice a apt que fetchee índices
+    # de AMBAS arquitecturas para esta source. Sin esto, apt solo descarga el
+    # Packages.gz de amd64 y los paquetes :i386 quedan invisibles (síntoma:
+    # "Unable to locate package libc6:i386"). Complementa el
+    # `dpkg --add-architecture i386` que hace build_appimage.sh en el container.
     sources:
-      - sourceline: 'deb http://archive.ubuntu.com/ubuntu/ jammy main universe'
+      - sourceline: 'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ jammy main universe'
         key_url: 'http://keyserver.ubuntu.com/pks/lookup?op=get&search=0x871920D1991BC93C'
-      - sourceline: 'deb http://archive.ubuntu.com/ubuntu/ jammy-updates main universe'
+      - sourceline: 'deb [arch=amd64,i386] http://archive.ubuntu.com/ubuntu/ jammy-updates main universe'
 
     include:
+      # bash: ELF bundled requerido por apprun_2 (exec en app_info DEBE ser ELF).
+      # Ver app_info.exec: usr/bin/bash + exec_args invocando AppRun_wrapper.sh.
+      - bash
       # Utilities del wrapper
       - zenity              # diálogos GUI del launcher
       - socat               # bridge UNIX→TCP del proxy
@@ -180,8 +318,10 @@ AppDir:
       - python3-pip
       - python3-venv
 
-      # Wine dependencies (32-bit libs que wine-ge necesita)
-      - libwine
+      # Wine dependencies (32-bit libs que wine-ge necesita).
+      # NO incluir 'libwine' del apt — bundleamos wine-ge en
+      # AppDir/opt/senaebox/wine-runner/ con su propio binario y libs.
+      # Instalar libwine pullaría wine64 + ~400 MB de deps no usadas.
       - libc6:i386
       - libstdc++6:i386
       - libfreetype6:i386
@@ -202,8 +342,15 @@ AppDir:
       - libasound2:i386
 
       # Mesa software rendering (llvmpipe) — necesario para LIBGL_ALWAYS_SOFTWARE
+      #
+      # En jammy (Ubuntu 22.04) hubo reorganización de paquetes Mesa/libglvnd:
+      #   - libegl1-mesa:i386 → ELIMINADO, ahora libegl1:i386 (provisto por libglvnd)
+      #   - libgl1-mesa-dri:i386 → sigue existiendo (drivers DRI Mesa)
+      #   - libglu1-mesa:i386 → sigue existiendo
+      # Si en el futuro la base sube a noble (24.04) o más nuevo, re-verificar
+      # los nombres porque libegl-mesa0/libgl1-mesa-glx fueron consolidados.
       - libgl1-mesa-dri:i386
-      - libegl1-mesa:i386
+      - libegl1:i386
       - libglu1-mesa:i386
 
       # X11 client libs para que Wine y Firefox dialogen con XWayland
@@ -280,7 +427,10 @@ AppDir:
 # =============================================================================
 AppImage:
   arch: x86_64
-  comp: zstd                   # mejor ratio que gzip para binarios Wine
+  # Nota: 'comp: zstd' no es soportado por appimage-builder 0.9.1.
+  # Se usa el default (xz) — comprime un poco peor que zstd pero produce un
+  # AppImage funcional. Si en el futuro se actualiza appimage-builder a una
+  # versión que soporte zstd (≥1.x?), añadir: comp: zstd
   update-information: None     # sin auto-update (distribución manual)
   sign-key: None               # sin firmar (el usuario verifica SHA256 al descargar)
   file_name: !ENV "SenaeBox-${SENAEBOX_VERSION}-x86_64.AppImage"

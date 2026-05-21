@@ -115,15 +115,27 @@ Cuando el usuario ejecuta el `.AppImage`:
 
 ## Dependencias del HOST (que el AppImage NO bundlea)
 
-- `bubblewrap` — debe estar instalado (SUID root, no se puede bundlear)
-- `pkexec` — opcional, requerido solo si setup necesita instalar podman
-- `podman` — opcional, instalado/desinstalado por setup vía pkexec si falta
+| Dependencia | Por qué | Cómo instalar |
+|-------------|---------|---------------|
+| `bubblewrap` | Sandbox (SUID root, no se puede bundlear) | Fedora: `sudo dnf install bubblewrap` · Debian/Ubuntu: `sudo apt install bubblewrap` |
+| **glibc 32-bit** | Wine-ge bundled es ELF 32-bit. Si falta, `wine` no arranca con error "no se puede ejecutar" | Fedora: `sudo dnf install glibc.i686` · Debian/Ubuntu: `sudo apt install libc6:i386` (requiere `dpkg --add-architecture i386` primero) |
+| `fuse2` / `libfuse2` | Necesario para que el AppImage se auto-monte. **Alternativa**: ejecutar con `--appimage-extract-and-run` (no requiere FUSE pero extrae a `/tmp` en cada arranque) | Fedora: `sudo dnf install fuse-libs` · Debian/Ubuntu: `sudo apt install libfuse2` |
+| `pkexec` | Opcional. Requerido solo si el setup necesita instalar `podman` y el usuario no es root | Pre-instalado en la mayoría de escritorios (parte de `polkit`) |
+| `podman` | Opcional. Usado SOLO durante `setup_first_run.sh` para regenerar `cert8.db` con NSS tools (vía container temporal AlmaLinux). Si no está, setup lo instala vía pkexec y lo desinstala después | Fedora: `sudo dnf install podman` · Debian/Ubuntu: `sudo apt install podman` |
+
+### Verificación rápida de pre-requisitos
+
+```bash
+command -v bwrap        && echo "✓ bubblewrap" || echo "✗ falta bubblewrap"
+ldconfig -p | grep -q '/lib/ld-linux.so.2$' && echo "✓ glibc 32-bit" || echo "✗ falta glibc.i686 / libc6:i386"
+ldconfig -p | grep -q 'libfuse.so.2'        && echo "✓ libfuse2"     || echo "⚠ falta libfuse2 (usa --appimage-extract-and-run)"
+```
 
 ## Tamaño esperado
 
 | Componente | Tamaño aproximado |
 |------------|-------------------|
-| Wine-ge runner | ~940 MB |
+| Wine-ge runner (sin mono/gecko) | ~500 MB |
 | SENAE Browser portable (sin Data/) | ~185 MB |
 | mitmproxy venv + deps Python | ~80 MB |
 | Libs apt i386 (Wine deps) + Mesa | ~150 MB |

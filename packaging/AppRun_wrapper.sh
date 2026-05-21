@@ -38,10 +38,32 @@ fi
 # Wine-ge bundled: wine_env.sh detecta SENAEBOX_WINE como primer source
 export SENAEBOX_WINE="$SENAE_ROOT/wine-runner/bin/wine"
 
-# mitmdump del venv del AppImage en PATH (antes que el del sistema, por si difiere de versión)
-export PATH="$SENAE_ROOT/mitm-venv/bin:$APPDIR/usr/bin:$PATH"
+# IMPORTANTE: apprun_2 pone DECENAS de $APPDIR/... en el PATH (vía AppRun.env),
+# incluyendo $APPDIR/bin con bash bundled. Esos binarios tienen ELF interpreters
+# RELATIVOS (lib64/ld-linux-x86-64.so.2) que solo el AppRun ELF sabe resolver
+# vía libapprun_hooks LD_PRELOAD; cualquier fork+exec normal posterior falla con
+# "no se puede ejecutar". Por eso, cuando launch.sh hace `bash setup_first_run.sh`,
+# el bash bundled crashea sin output al stderr.
+#
+# Solución: filtrar $APPDIR/... del PATH excepto las rutas que SÍ queremos
+# bundled (mitm-venv: Python + mitmproxy; usr/bin del AppDir: tools host-safe).
+_path_clean=""
+IFS=':' read -ra _path_parts <<< "$PATH"
+for _p in "${_path_parts[@]}"; do
+    case "$_p" in
+        "$APPDIR/opt/senaebox/mitm-venv/bin") _path_clean+="$_p:" ;;
+        "$APPDIR"*) ;;  # descartar el resto de $APPDIR/...
+        *) _path_clean+="$_p:" ;;
+    esac
+done
+export PATH="${_path_clean%:}"
+unset _path_parts _path_clean _p
 
-# Libs bundled (mesa software, X11 i386, etc.)
+# Wine-ge bundled: wine_env.sh detecta SENAEBOX_WINE como primer source
+export SENAEBOX_WINE="$SENAE_ROOT/wine-runner/bin/wine"
+
+# Libs bundled (mesa software, X11 i386, etc.) — el AppRun ya las preconfigura
+# vía APPDIR_LIBRARY_PATH, pero las dejamos por completitud.
 export LD_LIBRARY_PATH="$APPDIR/usr/lib/x86_64-linux-gnu:$APPDIR/usr/lib/i386-linux-gnu:${LD_LIBRARY_PATH:-}"
 
 # =============================================================================

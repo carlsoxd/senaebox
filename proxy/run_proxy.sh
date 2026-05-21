@@ -23,11 +23,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-PROXY_SOCK="/tmp/senaebox-proxy.sock"
+# Suffix por instancia (ver launch.sh para explicación). Cuando run_proxy.sh es
+# invocado por launch.sh, hereda $PROXY_SOCK del entorno; si se invoca
+# standalone (modo dev), genera el suyo a partir de $USER+$HOME.
+SENAEBOX_INSTANCE_ID="${USER}-$(printf '%s' "${HOME}" | sha256sum | cut -c1-8)"
+PROXY_SOCK="${PROXY_SOCK:-/tmp/senaebox-${SENAEBOX_INSTANCE_ID}-proxy.sock}"
 MITM_HOST="127.0.0.1"
 MITM_PORT=8081
 BG_MODE=false
-PID_FILE="/tmp/senaebox-proxy.pid"
+PID_FILE="/tmp/senaebox-${SENAEBOX_INSTANCE_ID}-proxy.pid"
 STATE_DIR="${STATE_DIR:-$HOME/.local/share/senaebox}"
 LOG_DIR="$STATE_DIR/logs"
 

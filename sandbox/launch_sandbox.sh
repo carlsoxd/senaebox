@@ -27,7 +27,10 @@ WINE_USER=$(whoami)
 # mantener el sandbox vivo hasta que Firefox (y cualquier otro proceso Wine) termine.
 SENAE_EXE_WIN="C:\\users\\$WINE_USER\\Documents\\SENAE browser\\SENAE_browser_portable.exe"
 SENAE_EXE_LINUX="$WINEPREFIX_DIR/drive_c/users/$WINE_USER/Documents/SENAE browser/SENAE_browser_portable.exe"
-PROXY_SOCK="/tmp/senaebox-proxy.sock"
+# Suffix por instancia (ver launch.sh). Hereda PROXY_SOCK del padre cuando
+# es invocado desde launch.sh; fallback a calcular el suyo si se invoca solo.
+SENAEBOX_INSTANCE_ID="${USER}-$(printf '%s' "${HOME}" | sha256sum | cut -c1-8)"
+PROXY_SOCK="${PROXY_SOCK:-/tmp/senaebox-${SENAEBOX_INSTANCE_ID}-proxy.sock}"
 
 echo "=== SenaeBox — Fase 4 (Bubblewrap + proxy TLS) ==="
 echo ""
@@ -215,7 +218,7 @@ BWRAP_ARGS=(
     # arranca desde C:\Windows, lo que puede afectar rutas relativas en Wine.
     # Es un tmpfs vacío — los writes son temporales y se descartan al cerrar.
     # IMPORTANTE: bwrap --dir NO crea directorios padre. /home debe crearse
-    # explícitamente antes de /home/luis; de lo contrario --dir "$HOME" falla
+    # explícitamente antes de /home/$USER; de lo contrario --dir "$HOME" falla
     # silenciosamente porque /home no existe en el sandbox.
     --dir /home
     --dir "$HOME"

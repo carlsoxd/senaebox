@@ -18,9 +18,17 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- Rutas ---
 STATE_DIR="$HOME/.local/share/senaebox"
 LOG_DIR="$STATE_DIR/logs"
-LOCK_FILE="/tmp/senaebox.lock"
-PROXY_SOCK="/tmp/senaebox-proxy.sock"
-PROXY_PID_FILE="/tmp/senaebox-proxy.pid"
+
+# Suffix por instancia: ${USER}-<8 chars del SHA-256 de $HOME>. Permite que
+# múltiples sesiones con HOMEs distintos coexistan en el mismo /tmp (e.g. test
+# del AppImage con HOME=/tmp/senaebox-test-home sin colisionar con la sesión
+# normal del usuario). El hash es determinístico: launch.sh, run_proxy.sh y
+# launch_sandbox.sh generan el mismo INSTANCE_ID cuando comparten $HOME.
+SENAEBOX_INSTANCE_ID="${USER}-$(printf '%s' "${HOME}" | sha256sum | cut -c1-8)"
+LOCK_FILE="/tmp/senaebox-${SENAEBOX_INSTANCE_ID}.lock"
+PROXY_SOCK="/tmp/senaebox-${SENAEBOX_INSTANCE_ID}-proxy.sock"
+PROXY_PID_FILE="/tmp/senaebox-${SENAEBOX_INSTANCE_ID}-proxy.pid"
+export PROXY_SOCK  # run_proxy.sh y launch_sandbox.sh lo respetan vía env
 SETUP_MARKER="$STATE_DIR/.setup_complete"
 PROFILE_DIR="$STATE_DIR/wine/drive_c/users/$(whoami)/Documents/SENAE browser/Data/profile"
 
@@ -129,19 +137,19 @@ _stop_proxy() {
 }
 
 # =============================================================================
-# Mapeo de C:\users\luis\Downloads → ~/SenaeBox/Descargas
+# Mapeo de C:\users\$USER\Downloads → ~/SenaeBox/Descargas
 #
-# Wine registra por default FOLDERID_Downloads = C:\users\luis\Downloads.
+# Wine registra por default FOLDERID_Downloads = C:\users\$USER\Downloads.
 # Pero ese directorio es DENTRO del wineprefix — no es visible para el host.
 #
-# Históricamente el user.js usaba browser.download.dir = "Z:\\home\\luis\\..."
+# Históricamente el user.js usaba browser.download.dir = "Z:\\home\\$USER\\..."
 # (drive Z = / por convención Wine), pero create_wineprefix.sh borra el
 # symlink z: → / como parte del aislamiento de symlinks fugados. Resultado:
-# Z:\ apunta a directorio vacío → Firefox cae al default C:\users\luis\Downloads
+# Z:\ apunta a directorio vacío → Firefox cae al default C:\users\$USER\Downloads
 # → descargas terminan en el wineprefix, no en ~/SenaeBox/Descargas.
 #
 # Solución: convertir el directorio Downloads del wineprefix en symlink hacia
-# /home/luis/SenaeBox/Descargas. El bind mount del sandbox monta esa ruta como
+# $HOME/SenaeBox/Descargas. El bind mount del sandbox monta esa ruta como
 # el directorio real del host. Wine sigue el symlink → escribe en bind →
 # aparece en ~/SenaeBox/Descargas del host. Sin tocar drive letters ni user.js.
 #
