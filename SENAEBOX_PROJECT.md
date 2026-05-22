@@ -339,17 +339,9 @@ Fase 7: Empaquetado y distribución
 
 | Rol | Descripción |
 |---|---|
-| Luis | Desarrollador principal, acceso a hardware real, usuario del Ecuapass, coordinador entre herramientas, tester |
+| Usuario | Desarrollador principal, acceso a hardware real, usuario del Ecuapass, coordinador entre herramientas, tester |
 | Claude (Anthropic) | Diseño de arquitectura, implementación de código, análisis del código fuente |
 | Gemini (Google) | Auditoría técnica de arquitectura ✅ — arquitectura Wine aprobada en revisión del 15/05/2026 |
-
----
-
-## 8. Repositorio
-
-> ⚠️ Pendiente: Crear repositorio público en GitHub  
-> Nombre sugerido: `senaebox` o `ecuabox`  
-> Licencia sugerida: MIT o GPL v3
 
 ---
 
@@ -357,9 +349,3 @@ Fase 7: Empaquetado y distribución
 
 ### Sobre el ecosistema npm y seguridad (contexto Mayo 2026)
 Durante el desarrollo de este proyecto se identificó que el ecosistema npm ha sufrido ataques masivos de supply chain (TeamPCP, TanStack, node-ipc). Aunque el SENAE Browser no usa npm en producción, estas vulnerabilidades son relevantes para el entorno de desarrollo. Se recomienda usar `--ignore-scripts` en cualquier `npm install` durante el desarrollo de SenaeBox.
-
-### Sobre la máquina de desarrollo
-- **Hardware:** HP EliteBook 840 G8 (Intel Core i7 11th gen, 16GB RAM, 1TB NVMe)
-- **OS:** Fedora Linux
-- **Herramientas disponibles:** Docker, Tailscale, nvm
-- **Nota SSD:** El NVMe Crucial T710 PCIe Gen5 opera a velocidades Gen3 por limitación del BIOS de HP.
