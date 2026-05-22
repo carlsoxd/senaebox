@@ -187,3 +187,5 @@ AppDir/
 # Logs y CSVs de diagnóstico
 **/logs/
 **/*.csv
+CLAUDE.md
+CLAUDE.md
